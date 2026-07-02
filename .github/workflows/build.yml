@@ -1,0 +1,70 @@
+name: build-fifa-data
+
+# Обновляет fifa_data.json: тянет parquet + xlsx с Google Drive,
+# гоняет build_fifa_data.py, коммитит json только если он изменился.
+
+on:
+  workflow_dispatch:            # кнопка "Run workflow" в GitHub
+  schedule:
+    - cron: "0 */6 * * *"       # каждые 6 часов (UTC). Пустой прогон безвреден.
+
+permissions:
+  contents: write               # нужно для git push
+
+concurrency:                    # не запускать два прогона разом
+  group: build-fifa-data
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          pip install pandas pyarrow openpyxl
+          sudo apt-get update && sudo apt-get install -y rclone
+
+      - name: Write service account key
+        run: echo "$GDRIVE_SA_JSON" > sa.json
+        env:
+          GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
+
+      # Players_Groups_History.xlsx лежит в репо (статичный). Тянем только parquet.
+      - name: Pull parquet from Google Drive
+        env:
+          RCLONE_CONFIG_GD_TYPE: drive
+          RCLONE_CONFIG_GD_SCOPE: drive.readonly
+          RCLONE_CONFIG_GD_SERVICE_ACCOUNT_FILE: sa.json
+          RCLONE_CONFIG_GD_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+        run: |
+          rclone copy gd: . \
+            --include "*_fifa_score.parquet" \
+            --transfers 8 -v
+          ls -la *_fifa_score.parquet Players_Groups_History.xlsx
+
+      - name: Build fifa_data.json
+        run: python build_fifa_data.py
+
+      - name: Commit if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add fifa_data.json
+          if git diff --cached --quiet; then
+            echo "No changes — данные не изменились, коммита нет."
+          else
+            git commit -m "auto: update fifa_data.json ($(date -u +%F' '%T)Z)"
+            git push
+          fi
+
+      - name: Cleanup secrets
+        if: always()
+        run: rm -f sa.json
