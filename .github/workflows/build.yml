@@ -1,17 +1,14 @@
 name: build-fifa-data
 
-# Обновляет fifa_data.json: тянет parquet + xlsx с Google Drive,
-# гоняет build_fifa_data.py, коммитит json только если он изменился.
-
 on:
-  workflow_dispatch:            # кнопка "Run workflow" в GitHub
+  workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"       # каждые 6 часов (UTC). Пустой прогон безвреден.
+    - cron: "0 */6 * * *"
 
 permissions:
-  contents: write               # нужно для git push
+  contents: write
 
-concurrency:                    # не запускать два прогона разом
+concurrency:
   group: build-fifa-data
   cancel-in-progress: false
 
@@ -37,7 +34,6 @@ jobs:
         env:
           GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
 
-      # Players_Groups_History.xlsx лежит в репо (статичный). Тянем только parquet.
       - name: Pull parquet from Google Drive
         env:
           RCLONE_CONFIG_GD_TYPE: drive
@@ -45,9 +41,7 @@ jobs:
           RCLONE_CONFIG_GD_SERVICE_ACCOUNT_FILE: sa.json
           RCLONE_CONFIG_GD_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
-          rclone copy gd: . \
-            --include "*_fifa_score.parquet" \
-            --transfers 8 -v
+          rclone copy gd: . --include "*_fifa_score.parquet" --transfers 8 -v
           ls -la *_fifa_score.parquet Players_Groups_History.xlsx
 
       - name: Build fifa_data.json
@@ -61,6 +55,10 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes — данные не изменились, коммита нет."
           else
+            # Данные реально обновились — пишем метку времени + статистику
+            python -c "import json,datetime; d=json.load(open('fifa_data.json')); dt=[r[2] for r in d]; json.dump({'updated_utc':datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')+'Z','matches':len(d),'earliest_date':min(dt),'latest_date':max(dt)}, open('last_update.json','w'), ensure_ascii=False, indent=2)"
+            cat last_update.json
+            git add last_update.json
             git commit -m "auto: update fifa_data.json ($(date -u +%F' '%T)Z)"
             git push
           fi
