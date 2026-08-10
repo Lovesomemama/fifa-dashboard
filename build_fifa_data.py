@@ -46,6 +46,17 @@ def time_to_seconds(t):
     return int(parts[0]) * 60 + int(parts[1])
 
 
+def gtime_to_seconds(v):
+    """Игровое время гола 'MM:SS' -> секунды. Пусто/битое -> None."""
+    if v is None or (isinstance(v, float) and pd.isna(v)) or str(v).strip() == "":
+        return None
+    parts = str(v).split(":")
+    try:
+        return int(parts[0]) * 60 + int(parts[1])
+    except (ValueError, IndexError):
+        return None
+
+
 def process_match(m_df):
     m_df = m_df.sort_values("incident_timestamp").reset_index(drop=True)
     first = m_df.iloc[0]
@@ -87,7 +98,9 @@ def process_match(m_df):
         else:
             non_monotonic = True
             break
-        seq.append([h, a, side])
+        # Игровое время гола (секунды) — для расчёта времени до след. гола
+        t = gtime_to_seconds(row.get("incident_game_time"))
+        seq.append([h, a, side, t])
         prev_h, prev_a = h, a
 
     if non_monotonic:
@@ -96,11 +109,11 @@ def process_match(m_df):
     # Авторитет: последовательность голов (для консистентности UI)
     s1, s2 = prev_h, prev_a
 
-    # Если flip — инвертировать всё под алфавит
+    # Если flip — инвертировать всё под алфавит (время t не меняется)
     if flip:
         s1, s2 = s2, s1
         d1, d2 = d2, d1
-        seq = [[a, h, 1 - side] for h, a, side in seq]
+        seq = [[a, h, 1 - side, t] for h, a, side, t in seq]
 
     return [p1, p2, date, brand, fmt, s1, s2, seq], (d1, d2, prev_h, prev_a)
 
