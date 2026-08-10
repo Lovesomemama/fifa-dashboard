@@ -3,7 +3,9 @@ name: build-fifa-data
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"
+    # 8:30 по Киеву. cron в UTC!
+    # Лето (UTC+3): 30 5  |  Зима (UTC+2): 30 6  <- поменять в конце октября
+    - cron: "30 5 * * *"
 
 permissions:
   contents: write
