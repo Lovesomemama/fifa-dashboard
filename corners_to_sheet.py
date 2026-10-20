@@ -1,4 +1,4 @@
-import os, io, re, json
+import os, io, re, json, time
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -151,8 +151,22 @@ try:
 except gspread.WorksheetNotFound:
     ws = sh.add_worksheet(WS_NAME, rows=1, cols=len(out.columns))
 
+
 values = [out.columns.tolist()] + json.loads(out.to_json(orient="values"))
 ws.clear()
 ws.resize(rows=len(values), cols=len(out.columns))
-ws.update(values, "A1", value_input_option="USER_ENTERED")
+
+CHUNK = 5000
+for i in range(0, len(values), CHUNK):
+    part = values[i:i + CHUNK]
+    for attempt in range(5):
+        try:
+            ws.update(part, f"A{i + 1}", value_input_option="USER_ENTERED")
+            break
+        except gspread.exceptions.APIError:
+            if attempt == 4:
+                raise
+            time.sleep(2 ** attempt * 3)
+    print(f"written {i + len(part)}/{len(values)}")
+
 print(f"files={len(files)} matches={len(out)}")
