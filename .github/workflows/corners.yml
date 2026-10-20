@@ -23,4 +23,7 @@ jobs:
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
           GSHEET_ID: ${{ secrets.GSHEET_ID }}
           DAYS_BACK: "180"
-      - uses: gautamkrishnar/keepalive-workflow@v2
+      - name: keepalive (re-enable schedule, no commits)
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/corners.yml/enable"
+        env:
+          GH_TOKEN: ${{ github.token }}
