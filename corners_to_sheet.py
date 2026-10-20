@@ -10,7 +10,8 @@ from googleapiclient.http import MediaIoBaseDownload
 # ---------- config ----------
 SA_INFO   = json.loads(os.environ["GDRIVE_SA_JSON"])
 FOLDER_ID = os.environ["GDRIVE_FOLDER_ID"]
-SHEET_ID  = os.environ["GSHEET_ID"]
+SHEET_ID  = re.search(r"[-\w]{25,}", os.environ["GSHEET_ID"]).group(0)
+print("SHEET_ID len:", len(SHEET_ID))
 DAYS_BACK = int(os.environ.get("DAYS_BACK", 180))
 WS_NAME   = "DB_Corners"
 TZ_SRC    = "UTC"
