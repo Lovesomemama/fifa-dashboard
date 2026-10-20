@@ -60,12 +60,37 @@ cutoff = (datetime.now(timezone.utc) - timedelta(days=DAYS_BACK)).date()
 files = [f for f in list_files() if (file_date(f["name"]) or cutoff) >= cutoff]
 files.sort(key=lambda f: f["name"])
 
-frames = []
+WANT = {
+    "match_id":           ["match_id"],
+    "match_date":         ["match_date", "match_start"],
+    "match_title":        ["match_title", "match_name"],
+    "league":             ["league", "tournament", "competition"],
+    "incident_type_id":   ["incident_type_id", "incident_type"],
+    "incident_timestamp": ["incident_timestamp", "incident_ts"],
+    "actor":              ["actor"],
+}
+
+
+def pick(cols, prefixes):
+    low = {c.lower(): c for c in cols}
+    for p in prefixes:
+        if p in low:
+            return low[p]
+    for p in prefixes:
+        hit = [c for c in cols if c.lower().startswith(p)]
+        if hit:
+            return sorted(hit, key=len)[0]
+    raise KeyError(f"no column for {prefixes}. have: {list(cols)}")
+
+
+frames, colmap = [], None
 for f in files:
     d = load(f["id"])
-    actor = next(c for c in d.columns if c.startswith("actor"))
-    d = d[["match_id", "match_date", "match_title", "league",
-           "incident_type_id", "incident_timestamp", actor]].rename(columns={actor: "actor"})
+    if colmap is None:
+        print("COLUMNS:", list(d.columns))
+        colmap = {k: pick(d.columns, v) for k, v in WANT.items()}
+        print("MAP:", colmap)
+    d = d[list(colmap.values())].rename(columns={v: k for k, v in colmap.items()})
     frames.append(d)
 
 df = pd.concat(frames, ignore_index=True)
