@@ -143,6 +143,13 @@ out = out[["match_id", "event_dt", "tournament", "team1", "p1", "team2", "p2",
            "c1_h1", "c1_h2", "c2_h1", "c2_h2", "c1_et", "c2_et",
            "c1", "c2", "total", "pair_key"]].sort_values("event_dt", ascending=False)
 
+cov = (out.groupby("tournament")["total"]
+   .agg(matches="size", avg_total="mean")
+   .sort_values("matches", ascending=False))
+print(cov.to_string())
+dead = cov.index[cov["avg_total"] == 0].tolist()
+out = out[~out["tournament"].isin(dead)]
+print("dropped:", dead, "| left:", len(out))
 # ---------- write ----------
 gc = gspread.authorize(creds)
 sh = gc.open_by_key(SHEET_ID)
