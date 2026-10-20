@@ -152,31 +152,45 @@ dead = cov.index[cov["avg_total"] == 0].tolist()
 out = out[~out["tournament"].isin(dead)]
 print("dropped:", dead, "| left:", len(out))
 
-# ---------- write DB ----------
+# ---------- pairs (for dropdowns) ----------
+a = out[["p1", "p2", "tournament", "team1", "team2"]].set_axis(
+    ["player", "opp", "tournament", "team", "opp_team"], axis=1)
+b = out[["p2", "p1", "tournament", "team2", "team1"]].set_axis(
+    ["player", "opp", "tournament", "team", "opp_team"], axis=1)
+pairs = (pd.concat([a, b]).dropna()
+           .groupby(["player", "opp", "tournament", "team", "opp_team"]).size()
+           .rename("matches").reset_index()
+           .sort_values(["player", "opp", "tournament"]))
+print("pairs rows:", len(pairs))
+
+# ---------- write ----------
 gc = gspread.authorize(creds)
 sh = gc.open_by_key(SHEET_ID)
-try:
-    ws = sh.worksheet(WS_NAME)
-except gspread.WorksheetNotFound:
-    ws = sh.add_worksheet(WS_NAME, rows=1, cols=len(out.columns))
 
-values = [out.columns.tolist()] + json.loads(out.to_json(orient="values"))
-ws.clear()
-ws.resize(rows=len(values), cols=len(out.columns))
 
-CHUNK = 5000
-for i in range(0, len(values), CHUNK):
-    part = values[i:i + CHUNK]
-    for attempt in range(5):
-        try:
-            ws.update(part, f"A{i + 1}", value_input_option="USER_ENTERED")
-            break
-        except gspread.exceptions.APIError:
-            if attempt == 4:
-                raise
-            time.sleep(2 ** attempt * 3)
-    print(f"written {i + len(part)}/{len(values)}")
+def write_ws(name, frame, chunk=5000):
+    try:
+        ws = sh.worksheet(name)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(name, rows=1, cols=len(frame.columns))
+    values = [frame.columns.tolist()] + json.loads(frame.to_json(orient="values"))
+    ws.clear()
+    ws.resize(rows=len(values), cols=len(frame.columns))
+    for i in range(0, len(values), chunk):
+        part = values[i:i + chunk]
+        for attempt in range(5):
+            try:
+                ws.update(part, f"A{i + 1}", value_input_option="USER_ENTERED")
+                break
+            except gspread.exceptions.APIError:
+                if attempt == 4:
+                    raise
+                time.sleep(2 ** attempt * 3)
+    print(f"{name}: written {len(values) - 1} rows")
 
+
+write_ws(WS_NAME, out)
+write_ws("PAIRS", pairs)
 print(f"files={len(files)} matches={len(out)}")
 
 
@@ -197,21 +211,22 @@ def colstr(n):
 
 
 def h2h(use_tour, use_team):
+    # LET names must not look like cell refs (p1, t1, l1 ... are invalid)
     tour = '(($B$1="*")+(INDEX(db,,3)=$B$1))>0,' if use_tour else ''
-    team = ('g,FILTER(r,(($B$3="*")+(t1=$B$3))>0,(($B$5="*")+(t2=$B$5))>0),'
+    team = ('g,FILTER(r,(($B$3="*")+(ta=$B$3))>0,(($B$5="*")+(tb=$B$5))>0),'
             if use_team else 'g,r,')
     return (
         '=IFERROR(ARRAYFORMULA(LET('
         'db,DB_Corners!A2:Q,'
-        'p1,LOWER(TRIM($B$2)),p2,LOWER(TRIM($B$4)),'
+        'pa,LOWER(TRIM($B$2)),pb,LOWER(TRIM($B$4)),'
         'k,INDEX(db,,17),'
-        'f,FILTER(db,((k=p1&"|"&p2)+(k=p2&"|"&p1))>0,' + tour +
+        'f,FILTER(db,((k=pa&"|"&pb)+(k=pb&"|"&pa))>0,' + tour +
         'INDEX(db,,2)>=$B$6,INDEX(db,,2)<$B$7+1),'
-        'a,LOWER(INDEX(f,,5))=p1,'
+        'a,LOWER(INDEX(f,,5))=pa,'
         'd,INDEX(f,,2),'
-        't1,IF(a,INDEX(f,,4),INDEX(f,,6)),'
-        't2,IF(a,INDEX(f,,6),INDEX(f,,4)),'
-        'r,HSTACK(d,t1,t2,'
+        'ta,IF(a,INDEX(f,,4),INDEX(f,,6)),'
+        'tb,IF(a,INDEX(f,,6),INDEX(f,,4)),'
+        'r,HSTACK(d,ta,tb,'
         'IF(a,INDEX(f,,8),INDEX(f,,10)),IF(a,INDEX(f,,9),INDEX(f,,11)),'
         'IF(a,INDEX(f,,10),INDEX(f,,8)),IF(a,INDEX(f,,11),INDEX(f,,9)),'
         'EXP(-LN(2)*($B$7+1-d)/$B$8)),'
@@ -224,18 +239,18 @@ def guard(f, cnt):
     return f'=IF({cnt}=0,"",' + f[1:] + ')'
 
 
-def mxa(win, push, l1, l2, cnt):
-    return guard('=IFERROR(ARRAYFORMULA(LET(l1,' + l1 + ',l2,' + l2 + ','
+def _pm(la, lb, tail, cnt):
+    return guard('=IFERROR(ARRAYFORMULA(LET(la,' + la + ',lb,' + lb + ','
                  'i,MAKEARRAY(31,31,LAMBDA(r,c,r-1)),j,MAKEARRAY(31,31,LAMBDA(r,c,c-1)),'
-                 'm,POISSON.DIST(i,l1,FALSE)*POISSON.DIST(j,l2,FALSE),'
-                 '(1-SUM(m*(' + push + ')))/SUM(m*(' + win + ')))),"")', cnt)
+                 'm,POISSON.DIST(i,la,FALSE)*POISSON.DIST(j,lb,FALSE),' + tail + ')),"")', cnt)
 
 
-def mx(cond, l1, l2, cnt):
-    return guard('=IFERROR(ARRAYFORMULA(LET(l1,' + l1 + ',l2,' + l2 + ','
-                 'i,MAKEARRAY(31,31,LAMBDA(r,c,r-1)),j,MAKEARRAY(31,31,LAMBDA(r,c,c-1)),'
-                 'm,POISSON.DIST(i,l1,FALSE)*POISSON.DIST(j,l2,FALSE),'
-                 '1/SUM(m*(' + cond + ')))),"")', cnt)
+def mxa(win, push, la, lb, cnt):
+    return _pm(la, lb, '(1-SUM(m*(' + push + ')))/SUM(m*(' + win + '))', cnt)
+
+
+def mx(cond, la, lb, cnt):
+    return _pm(la, lb, '1/SUM(m*(' + cond + '))', cnt)
 
 
 R0 = 12          # first results row
@@ -255,8 +270,8 @@ def build_calc(sh):
 
     # ---- inputs ----
     for r, (lab, val) in enumerate([
-        ("Турнир (блок 2)", "*"), ("Игрок 1", ""), ("Команда 1 (блок 2)", "*"),
-        ("Игрок 2", ""), ("Команда 2 (блок 2)", "*"),
+        ("Турнир (блок 2) ③", "*"), ("Игрок 1 ①", ""), ("Команда 1 (блок 2) ④", "*"),
+        ("Игрок 2 ②", ""), ("Команда 2 (блок 2) ⑤", "*"),
         ("Дата от", "=TODAY()-60"), ("Дата до", "=TODAY()"),
         ("Полураспад, дн", 30)], start=1):
         put(f"A{r}", lab)
@@ -441,28 +456,19 @@ def build_calc(sh):
           "D", "E", "V", use_tour=True, use_team=True, mkt_col0="G")
     put(f"D{R0 - 2}", '="ТУРНИР: "&$B$1')
 
-    # ---- dropdown lists ----
+    # ---- dropdown lists (from PAIRS: player, opp, tournament, team, opp_team) ----
+    PA, PB, PC, PD, PE = (f"PAIRS!{x}2:{x}" for x in "ABCDE")
     put("AE1", "Турниры")
-    put("AE2", '=VSTACK("*",SORT(UNIQUE(FILTER(DB_Corners!C2:C,DB_Corners!C2:C<>""))))')
+    put("AE2", f'=IFERROR(VSTACK("*",SORT(UNIQUE(FILTER({PC},{PA}=$B$2,'
+               f'(($B$4="")+({PB}=$B$4))>0)))),"*")')
     put("AF1", "Игроки")
-    put("AF2", '=IFERROR(SORT(UNIQUE(FILTER(VSTACK(DB_Corners!E2:E,DB_Corners!G2:G),'
-               'VSTACK(DB_Corners!E2:E,DB_Corners!G2:G)<>""))),"")')
+    put("AF2", f'=IFERROR(SORT(UNIQUE(FILTER({PA},{PA}<>""))),"")')
     put("AG1", "Соперники")
-    put("AG2", '=IFERROR(ARRAYFORMULA(LET(p1,LOWER(TRIM($B$2)),'
-               'opp,VSTACK(DB_Corners!G2:G,DB_Corners!E2:E),'
-               'me,VSTACK(LOWER(DB_Corners!E2:E),LOWER(DB_Corners!G2:G)),'
-               'SORT(UNIQUE(FILTER(opp,me=p1))))),"")')
-    for col, mine in (("AH", True), ("AI", False)):
-        tm = ("IF(a,DB_Corners!D2:D,DB_Corners!F2:F)" if mine
-              else "IF(a,DB_Corners!F2:F,DB_Corners!D2:D)")
-        put(f"{col}1", "Команды P1" if mine else "Команды P2")
-        put(f"{col}2", '=IFERROR(ARRAYFORMULA(LET(t,$B$1,'
-                       'p1,LOWER(TRIM($B$2)),p2,LOWER(TRIM($B$4)),'
-                       'k,DB_Corners!Q2:Q,tr,DB_Corners!C2:C,'
-                       'a,LOWER(DB_Corners!E2:E)=p1,'
-                       'tm,' + tm + ','
-                       'VSTACK("*",SORT(UNIQUE(FILTER(tm,((k=p1&"|"&p2)+(k=p2&"|"&p1))>0,'
-                       '((t="*")+(tr=t))>0)))))),"*")')
+    put("AG2", f'=IFERROR(SORT(UNIQUE(FILTER({PB},{PA}=$B$2))),"")')
+    for col, src in (("AH", PD), ("AI", PE)):
+        put(f"{col}1", "Команды P1" if col == "AH" else "Команды P2")
+        put(f"{col}2", f'=IFERROR(VSTACK("*",SORT(UNIQUE(FILTER({src},{PA}=$B$2,{PB}=$B$4,'
+                       f'(($B$1="*")+({PC}=$B$1))>0)))),"*")')
 
     ws.batch_update(cells, value_input_option="USER_ENTERED")
 
