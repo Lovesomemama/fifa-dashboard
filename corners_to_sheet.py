@@ -196,8 +196,8 @@ print(f"files={len(files)} matches={len(out)}")
 
 # ---------- CALC (created once; delete tab to rebuild) ----------
 # layout 1:1 with Volta sheet:
-#   A:E  table 1 = selected tournament + teams (dropdowns in header)
-#   G:K  table 2 = all tournaments H2H
+#   A:E  table 1 = all tournaments H2H (input chips in header)
+#   G:K  table 2 = selected tournament + teams
 #   M:N  settings, P:T summary, V+ helpers/lists
 
 TOUR, T1, T2, PL1, PL2 = "$A$1", "$A$2", "$D$2", "$A$3", "$D$3"
@@ -382,8 +382,8 @@ def build_calc(sh):
             put(f"{c[0]}2", "*"); put(f"{c[3]}2", "*")  # team dropdowns
             put(f"{c[0]}3", ""); put(f"{c[3]}3", "")    # player dropdowns
         else:
-            put(f"{c[0]}1", f'="* ВСЕ ТУРНИРЫ ("&{PL1}&" - "&{PL2}&")"')
-            put(f"{c[0]}2", "*"); put(f"{c[3]}2", "*")
+            put(f"{c[0]}1", f'={TOUR}&" ("&{PL1}&" - "&{PL2}&")"')
+            put(f"{c[0]}2", f"={T1}"); put(f"{c[3]}2", f"={T2}")
             put(f"{c[0]}3", f"={PL1}"); put(f"{c[3]}3", f"={PL2}")
         put(f"{c[2]}3", "X")
         merge(c[0], 1, c[4], 1)
@@ -451,9 +451,9 @@ def build_calc(sh):
         fmt(rng(c[0], mid, c[4], mid), {"textFormat": {"bold": True}})
         fmt(rng(c[2], mid, c[2], mid), {"backgroundColor": MIDC})
 
-    # left: tournament + teams, right: all tournaments
-    block("Q", "R", f'="ТУРНИР: "&{TOUR}', "V", True, True, "A", "inputs")
-    block("S", "T", "ВСЕ ТУРНИРЫ", "AE", False, False, "G", "all")
+    # left: all tournaments (chips = inputs), right: selected tournament + teams
+    block("Q", "R", "ВСЕ ТУРНИРЫ", "V", False, False, "A", "inputs")
+    block("S", "T", f'="ТУРНИР: "&{TOUR}', "AE", True, True, "G", "tour")
 
     # ---- dropdown lists AN:AR (from PAIRS: player, opp, tournament, team, opp_team) ----
     PA, PB, PC, PD, PE = (f"PAIRS!{x}2:{x}" for x in "ABCDE")
