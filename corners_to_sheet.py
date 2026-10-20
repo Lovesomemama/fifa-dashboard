@@ -239,18 +239,18 @@ def guard(f, cnt):
     return f'=IF({cnt}=0,"",' + f[1:] + ')'
 
 
-def _pm(la, lb, tail, cnt):
+def _pm(la, lb, tail, cnt, mcell):
     return guard('=IFERROR(ARRAYFORMULA(LET(la,' + la + ',lb,' + lb + ','
                  'i,MAKEARRAY(31,31,LAMBDA(r,c,r-1)),j,MAKEARRAY(31,31,LAMBDA(r,c,c-1)),'
-                 'm,POISSON.DIST(i,la,FALSE)*POISSON.DIST(j,lb,FALSE),' + tail + ')),"")', cnt)
+                 'm,POISSON.DIST(i,la,FALSE)*POISSON.DIST(j,lb,FALSE),(' + tail + ')/(1+' + mcell + '))),"")', cnt)
 
 
 def mxa(win, push, la, lb, cnt):
-    return _pm(la, lb, '(1-SUM(m*(' + push + ')))/SUM(m*(' + win + '))', cnt)
+    return _pm(la, lb, '(1-SUM(m*(' + push + ')))/SUM(m*(' + win + '))', cnt, '$E$1')
 
 
 def mx(cond, la, lb, cnt):
-    return _pm(la, lb, '1/SUM(m*(' + cond + '))', cnt)
+    return _pm(la, lb, '1/SUM(m*(' + cond + '))', cnt, '$E$2')
 
 
 R0 = 12          # first results row
@@ -272,10 +272,18 @@ def build_calc(sh):
     for r, (lab, val) in enumerate([
         ("Турнир (блок 2) ③", "*"), ("Игрок 1 ①", ""), ("Команда 1 (блок 2) ④", "*"),
         ("Игрок 2 ②", ""), ("Команда 2 (блок 2) ⑤", "*"),
-        ("Дата от", "=TODAY()-60"), ("Дата до", "=TODAY()"),
-        ("Полураспад, дн", 30)], start=1):
+        ("Дата от", "=B7-B9"), ("Дата до", "=TODAY()"),
+        ("Полураспад, дн", 30), ("Выборка дней", 60)], start=1):
         put(f"A{r}", lab)
         put(f"B{r}", val)
+
+    put("D1", "Маржа Ф/Тотал")
+    put("E1", 0.075)
+    put("D2", "Маржа 1X2")
+    put("E2", 0.10)
+    fmts.append({"range": "E1:E2", "format": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"},
+                                           "backgroundColor": {"red": 1, "green": 0.85, "blue": 0.4}}})
+    fmts.append({"range": "D1:D2", "format": {"textFormat": {"bold": True}}})
 
     labels = ["H2H матчей / эфф.", "λ1 (Игрок 1)", "λ2 (Игрок 2)", "М.О.Угл",
               "Разница (λ1−λ2)", "Часть H1", "Часть H2", "H1 доля Игрок 1",
@@ -396,8 +404,8 @@ def build_calc(sh):
                 put(f"{c[2]}{rr}", guard(f"={c[2]}{mid}{rr - mid:+d}", cnt))
             push = f"IF({L}=INT({L}),POISSON.DIST({L},{lam},FALSE),0)"
             put(f"{c[0]}{rr}", cntf(f"{T}>{L}"))
-            put(f"{c[1]}{rr}", guard(f'=IFERROR((1-{push})/(1-POISSON.DIST(FLOOR({L}),{lam},TRUE)),"")', cnt))
-            put(f"{c[3]}{rr}", guard(f'=IFERROR((1-{push})/POISSON.DIST(CEILING({L})-1,{lam},TRUE),"")', cnt))
+            put(f"{c[1]}{rr}", guard(f'=IFERROR((1-{push})/(1-POISSON.DIST(FLOOR({L}),{lam},TRUE))/(1+$E$1),"")', cnt))
+            put(f"{c[3]}{rr}", guard(f'=IFERROR((1-{push})/POISSON.DIST(CEILING({L})-1,{lam},TRUE)/(1+$E$1),"")', cnt))
             put(f"{c[4]}{rr}", cntf(f"{T}<{L}"))
 
         BLUE = {"red": 0.79, "green": 0.85, "blue": 0.97}
