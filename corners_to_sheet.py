@@ -195,6 +195,16 @@ print(f"files={len(files)} matches={len(out)}")
 
 
 # ---------- CALC (created once; delete tab to rebuild) ----------
+# layout 1:1 with Volta sheet:
+#   A:E  table 1 = selected tournament + teams (dropdowns in header)
+#   G:K  table 2 = all tournaments H2H
+#   M:N  settings, P:T summary, V+ helpers/lists
+
+TOUR, T1, T2, PL1, PL2 = "$A$1", "$A$2", "$D$2", "$A$3", "$D$3"
+WIN, DFROM, HALF, DTO, MF, MX = "$M$2", "$N$2", "$M$4", "$N$4", "$M$6", "$N$6"
+SR0 = 3   # first summary metric row
+
+
 def colnum(s):
     n = 0
     for ch in s:
@@ -212,16 +222,16 @@ def colstr(n):
 
 def h2h(use_tour, use_team):
     # LET names must not look like cell refs (p1, t1, l1 ... are invalid)
-    tour = '(($B$1="*")+(INDEX(db,,3)=$B$1))>0,' if use_tour else ''
-    team = ('g,FILTER(r,(($B$3="*")+(ta=$B$3))>0,(($B$5="*")+(tb=$B$5))>0),'
+    tour = f'(({TOUR}="*")+(INDEX(db,,3)={TOUR}))>0,' if use_tour else ''
+    team = (f'g,FILTER(r,(({T1}="*")+(ta={T1}))>0,(({T2}="*")+(tb={T2}))>0),'
             if use_team else 'g,r,')
     return (
         '=IFERROR(ARRAYFORMULA(LET('
         'db,DB_Corners!A2:Q,'
-        'pa,LOWER(TRIM($B$2)),pb,LOWER(TRIM($B$4)),'
+        f'pa,LOWER(TRIM({PL1})),pb,LOWER(TRIM({PL2})),'
         'k,INDEX(db,,17),'
         'f,FILTER(db,((k=pa&"|"&pb)+(k=pb&"|"&pa))>0,' + tour +
-        'INDEX(db,,2)>=$B$6,INDEX(db,,2)<$B$7+1),'
+        f'INDEX(db,,2)>={DFROM},INDEX(db,,2)<{DTO}+1),'
         'a,LOWER(INDEX(f,,5))=pa,'
         'd,INDEX(f,,2),'
         'ta,IF(a,INDEX(f,,4),INDEX(f,,6)),'
@@ -229,7 +239,7 @@ def h2h(use_tour, use_team):
         'r,HSTACK(d,ta,tb,'
         'IF(a,INDEX(f,,8),INDEX(f,,10)),IF(a,INDEX(f,,9),INDEX(f,,11)),'
         'IF(a,INDEX(f,,10),INDEX(f,,8)),IF(a,INDEX(f,,11),INDEX(f,,9)),'
-        'EXP(-LN(2)*($B$7+1-d)/$B$8)),'
+        f'EXP(-LN(2)*({DTO}+1-d)/{HALF})),'
         + team +
         'SORT(g,1,FALSE))),"нет H2H")'
     )
@@ -242,77 +252,84 @@ def guard(f, cnt):
 def _pm(la, lb, tail, cnt, mcell):
     return guard('=IFERROR(ARRAYFORMULA(LET(la,' + la + ',lb,' + lb + ','
                  'i,MAKEARRAY(31,31,LAMBDA(r,c,r-1)),j,MAKEARRAY(31,31,LAMBDA(r,c,c-1)),'
-                 'm,POISSON.DIST(i,la,FALSE)*POISSON.DIST(j,lb,FALSE),(' + tail + ')/(1+' + mcell + '))),"")', cnt)
+                 'm,POISSON.DIST(i,la,FALSE)*POISSON.DIST(j,lb,FALSE),'
+                 '(' + tail + ')/(1+' + mcell + '))),"")', cnt)
 
 
 def mxa(win, push, la, lb, cnt):
-    return _pm(la, lb, '(1-SUM(m*(' + push + ')))/SUM(m*(' + win + '))', cnt, '$E$1')
+    return _pm(la, lb, '(1-SUM(m*(' + push + ')))/SUM(m*(' + win + '))', cnt, MF)
 
 
 def mx(cond, la, lb, cnt):
-    return _pm(la, lb, '1/SUM(m*(' + cond + '))', cnt, '$E$2')
+    return _pm(la, lb, '1/SUM(m*(' + cond + '))', cnt, MX)
 
 
-R0 = 12          # first results row
-MKT_ROW = 26     # first table row
+BLUE = {"red": 0.79, "green": 0.85, "blue": 0.97}
+PINK = {"red": 0.96, "green": 0.80, "blue": 0.80}
+GREY = {"red": 0.95, "green": 0.95, "blue": 0.95}
+MIDC = {"red": 0.86, "green": 0.82, "blue": 0.93}
+GOLD = {"red": 1, "green": 0.85, "blue": 0.4}
 
 
 def build_calc(sh):
-    ws = sh.add_worksheet(CALC_NAME, rows=200, cols=40, index=0)
+    ws = sh.add_worksheet(CALC_NAME, rows=200, cols=50, index=0)
     cells, fmts, reqs = [], [], []
+
+    def put(a1, v):
+        cells.append({"range": a1, "values": [[v]]})
+
+    def fmt(rng, f):
+        fmts.append({"range": rng, "format": f})
 
     def grid(c1, r1, c2, r2):
         return {"sheetId": ws.id, "startRowIndex": r1 - 1, "endRowIndex": r2,
                 "startColumnIndex": colnum(c1) - 1, "endColumnIndex": colnum(c2)}
 
-    def put(a1, v):
-        cells.append({"range": a1, "values": [[v]]})
+    def merge(c1, r1, c2, r2):
+        reqs.append({"mergeCells": {"mergeType": "MERGE_ALL", "range": grid(c1, r1, c2, r2)}})
 
-    # ---- inputs ----
-    for r, (lab, val) in enumerate([
-        ("Турнир (блок 2) ③", "*"), ("Игрок 1 ①", ""), ("Команда 1 (блок 2) ④", "*"),
-        ("Игрок 2 ②", ""), ("Команда 2 (блок 2) ⑤", "*"),
-        ("Дата от", "=B7-B9"), ("Дата до", "=TODAY()"),
-        ("Полураспад, дн", 30), ("Выборка дней", 60)], start=1):
-        put(f"A{r}", lab)
-        put(f"B{r}", val)
+    # ---- settings M:N ----
+    for a1, v in (("M1", "Выборка дней"), ("N1", "От"), ("M2", 60), ("N2", "=N4-M2"),
+                  ("M3", "Полураспад, дн"), ("N3", "До"), ("M4", 30), ("N4", "=TODAY()"),
+                  ("M5", "Маржа Ф/Тотал"), ("N5", "Маржа 1X2"), ("M6", 0.075), ("N6", 0.10)):
+        put(a1, v)
+    fmt("M1:N6", {"horizontalAlignment": "CENTER"})
+    for rr in (1, 3, 5):
+        fmt(f"M{rr}:N{rr}", {"backgroundColor": BLUE, "textFormat": {"bold": True}})
+    fmt("M2:M4", {"backgroundColor": GREY})
+    fmt("N2", {"backgroundColor": PINK, "numberFormat": {"type": "DATE", "pattern": "dd.mm.yyyy"}})
+    fmt("N4", {"backgroundColor": PINK, "numberFormat": {"type": "DATE", "pattern": "dd.mm.yyyy"}})
+    fmt("M6:N6", {"backgroundColor": GOLD, "textFormat": {"bold": True},
+                  "numberFormat": {"type": "PERCENT", "pattern": "0.0%"}})
 
-    put("D1", "Маржа Ф/Тотал")
-    put("E1", 0.075)
-    put("D2", "Маржа 1X2")
-    put("E2", 0.10)
-    fmts.append({"range": "E1:E2", "format": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"},
-                                           "backgroundColor": {"red": 1, "green": 0.85, "blue": 0.4}}})
-    fmts.append({"range": "D1:D2", "format": {"textFormat": {"bold": True}}})
-
+    # ---- summary P:T ----
     labels = ["H2H матчей / эфф.", "λ1 (Игрок 1)", "λ2 (Игрок 2)", "М.О.Угл",
               "Разница (λ1−λ2)", "Часть H1", "Часть H2", "H1 доля Игрок 1",
               "H1 доля Игрок 2", "% ничьих факт", "% ничьих Пуассон", "ДнаН подсказка"]
+    put("P1", "Сводка")
     for i, lab in enumerate(labels):
-        put(f"A{R0 + i}", lab)
+        put(f"P{SR0 + i}", lab)
+    fmt("P1:T2", {"backgroundColor": BLUE, "textFormat": {"bold": True}, "horizontalAlignment": "CENTER"})
+    fmt(f"P{SR0}:P{SR0 + 11}", {"textFormat": {"bold": True}, "backgroundColor": GREY})
 
-    def block(title, title_f, cs, cd, helper0, use_tour, use_team, mkt_col0):
-        # helper columns
+    def block(cs, cd, sum_title, helper0, use_tour, use_team, c0, header):
         hc = [colstr(colnum(helper0) + i) for i in range(8)]
         for c, lab in zip(hc, ["Дата", "Команда P1", "Команда P2",
                                "P1 H1", "P1 H2", "P2 H1", "P2 H2", "Вес"]):
             put(f"{c}1", lab)
         put(f"{hc[0]}2", h2h(use_tour, use_team))
-        fmts.append({"range": f"{hc[0]}2:{hc[0]}",
-                     "format": {"numberFormat": {"type": "DATE_TIME", "pattern": "dd.mm.yyyy hh:mm"}}})
-        fmts.append({"range": f"{hc[7]}2:{hc[7]}",
-                     "format": {"numberFormat": {"type": "NUMBER", "pattern": "0.000"}}})
-        fmts.append({"range": f"{hc[0]}1:{hc[7]}1", "format": {"textFormat": {"bold": True}}})
+        fmt(f"{hc[0]}2:{hc[0]}", {"numberFormat": {"type": "DATE_TIME", "pattern": "dd.mm.yyyy hh:mm"}})
+        fmt(f"{hc[7]}2:{hc[7]}", {"numberFormat": {"type": "NUMBER", "pattern": "0.000"}})
+        fmt(f"{hc[0]}1:{hc[7]}1", {"textFormat": {"bold": True}})
 
         S = lambda c: f"${c}$2:${c}"
         J, M, N, O, P, Q = S(hc[0]), S(hc[3]), S(hc[4]), S(hc[5]), S(hc[6]), S(hc[7])
-        cnt = f"${cs}${R0}"
+        cnt = f"${cs}${SR0}"
 
-        put(f"{cs}{R0 - 2}", title)
-        put(f"{cs}{R0 - 1}", "Простое")
-        put(f"{cd}{R0 - 1}", "Затухание")
-
-        r = {k: R0 + i for i, k in enumerate(
+        # summary columns
+        put(f"{cs}1", sum_title); merge(cs, 1, cd, 1)
+        put(f"{cs}2", "Простое"); put(f"{cd}2", "Затухание")
+        r = {k: SR0 + i for i, k in enumerate(
             ["n", "l1", "l2", "mo", "diff", "h1", "h2", "s1", "s2", "dfact", "dpois", "dnan"])}
         rows = {
             "n":    (f"=COUNT({J})", f"=IFERROR(SUM({Q})^2/SUMSQ({Q}),0)"),
@@ -344,12 +361,14 @@ def build_calc(sh):
                 fs, fd = guard(fs, cnt), guard(fd, cnt)
             put(f"{cs}{r[k]}", fs)
             put(f"{cd}{r[k]}", fd)
+        fmt(f"{cs}{SR0}:{cd}{r['diff']}", {"numberFormat": {"type": "NUMBER", "pattern": "0.00"}})
+        fmt(f"{cs}{r['h1']}:{cd}{r['dnan']}", {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}})
+        fmt(f"{cs}{r['mo']}:{cd}{r['diff']}", {"backgroundColor": GOLD, "textFormat": {"bold": True}})
 
-        # ---- table 1:1 (W/D/L, handicap nominals, total nominals) ----
+        # ---- table ----
         diff_c, mo_c = f"${cd}${r['diff']}", f"${cd}${r['mo']}"
         l1, l2 = f"${cd}${r['l1']}", f"${cd}${r['l2']}"
-        c = [colstr(colnum(mkt_col0) + i) for i in range(5)]
-        m0 = MKT_ROW
+        c = [colstr(colnum(c0) + i) for i in range(5)]
         D = f"(({M}+{N})-({O}+{P}))"
         T = f"({M}+{N}+{O}+{P})"
         ok = f"ISNUMBER({J})"
@@ -357,25 +376,27 @@ def build_calc(sh):
         def cntf(expr):
             return guard(f"=SUMPRODUCT({ok}*({expr}))", cnt)
 
-        def merge(c1, r1, c2, r2):
-            reqs.append({"mergeCells": {"mergeType": "MERGE_ALL", "range": grid(c1, r1, c2, r2)}})
-
-        # title
-        put(f"{c[0]}{m0}", title_f)
-        merge(c[0], m0, c[4], m0)
-        # names
-        put(f"{c[0]}{m0 + 1}", "=$B$2"); merge(c[0], m0 + 1, c[1], m0 + 1)
-        put(f"{c[2]}{m0 + 1}", "X")
-        put(f"{c[3]}{m0 + 1}", "=$B$4"); merge(c[3], m0 + 1, c[4], m0 + 1)
-        # W/D/L counts + odds
-        for cc, cond, mcond in ((c[0], f"{D}>0", "i>j"), (c[2], f"{D}=0", "i=j"), (c[3], f"{D}<0", "i<j")):
-            put(f"{cc}{m0 + 2}", cntf(cond))
-            put(f"{cc}{m0 + 3}", mx(mcond, l1, l2, cnt))
-        for rr in (m0 + 2, m0 + 3):
+        # header rows 1-3
+        if header == "inputs":
+            put(f"{c[0]}1", "*")                       # tournament dropdown
+            put(f"{c[0]}2", "*"); put(f"{c[3]}2", "*")  # team dropdowns
+            put(f"{c[0]}3", ""); put(f"{c[3]}3", "")    # player dropdowns
+        else:
+            put(f"{c[0]}1", f'="* ВСЕ ТУРНИРЫ ("&{PL1}&" - "&{PL2}&")"')
+            put(f"{c[0]}2", "*"); put(f"{c[3]}2", "*")
+            put(f"{c[0]}3", f"={PL1}"); put(f"{c[3]}3", f"={PL2}")
+        put(f"{c[2]}3", "X")
+        merge(c[0], 1, c[4], 1)
+        for rr in (2, 3, 4, 5):
             merge(c[0], rr, c[1], rr); merge(c[3], rr, c[4], rr)
 
-        # handicap
-        hr = m0 + 4
+        # W/D/L
+        for cc, cond, mcond in ((c[0], f"{D}>0", "i>j"), (c[2], f"{D}=0", "i=j"), (c[3], f"{D}<0", "i<j")):
+            put(f"{cc}4", cntf(cond))
+            put(f"{cc}5", mx(mcond, l1, l2, cnt))
+
+        # handicap rows 6-11
+        hr = 6
         put(f"{c[0]}{hr}", "Ф1"); put(f"{c[4]}{hr}", "Ф2")
         put(f"{c[1]}{hr}", guard(f'="Разница   "&TEXT({diff_c},"0.00")', cnt))
         merge(c[1], hr, c[3], hr)
@@ -388,8 +409,8 @@ def build_calc(sh):
             put(f"{c[3]}{rr}", mxa(f"i-j+{L}<0", f"i-j+{L}=0", l1, l2, cnt))
             put(f"{c[4]}{rr}", cntf(f"{D}+{L}<0"))
 
-        # total
-        tr0 = m0 + 10
+        # total rows 12-17
+        tr0 = 12
         put(f"{c[0]}{tr0}", ">"); put(f"{c[4]}{tr0}", "<")
         put(f"{c[1]}{tr0}", guard(f'="Тотал   "&TEXT({mo_c},"0.00")', cnt))
         merge(c[1], tr0, c[3], tr0)
@@ -404,103 +425,76 @@ def build_calc(sh):
                 put(f"{c[2]}{rr}", guard(f"={c[2]}{mid}{rr - mid:+d}", cnt))
             push = f"IF({L}=INT({L}),POISSON.DIST({L},{lam},FALSE),0)"
             put(f"{c[0]}{rr}", cntf(f"{T}>{L}"))
-            put(f"{c[1]}{rr}", guard(f'=IFERROR((1-{push})/(1-POISSON.DIST(FLOOR({L}),{lam},TRUE))/(1+$E$1),"")', cnt))
-            put(f"{c[3]}{rr}", guard(f'=IFERROR((1-{push})/POISSON.DIST(CEILING({L})-1,{lam},TRUE)/(1+$E$1),"")', cnt))
+            put(f"{c[1]}{rr}", guard(f'=IFERROR((1-{push})/(1-POISSON.DIST(FLOOR({L}),{lam},TRUE))/(1+{MF}),"")', cnt))
+            put(f"{c[3]}{rr}", guard(f'=IFERROR((1-{push})/POISSON.DIST(CEILING({L})-1,{lam},TRUE)/(1+{MF}),"")', cnt))
             put(f"{c[4]}{rr}", cntf(f"{T}<{L}"))
 
-        BLUE = {"red": 0.79, "green": 0.85, "blue": 0.97}
-        PINK = {"red": 0.96, "green": 0.80, "blue": 0.80}
-        GREY = {"red": 0.95, "green": 0.95, "blue": 0.95}
-        MIDC = {"red": 0.86, "green": 0.82, "blue": 0.93}
         rng = lambda c1, r1, c2, r2: f"{c1}{r1}:{c2}{r2}"
-        fmts.extend([
-            {"range": f"{cs}{R0}:{cd}{r['diff']}",
-             "format": {"numberFormat": {"type": "NUMBER", "pattern": "0.00"}}},
-            {"range": f"{cs}{r['h1']}:{cd}{r['dnan']}",
-             "format": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
-            {"range": f"{cs}{r['mo']}:{cd}{r['diff']}",
-             "format": {"backgroundColor": {"red": 1, "green": 0.85, "blue": 0.4},
-                        "textFormat": {"bold": True}}},
-            {"range": f"{cs}{R0 - 2}:{cd}{R0 - 1}", "format": {"textFormat": {"bold": True}}},
-            # table
-            {"range": rng(c[0], m0, c[4], m0 + 15),
-             "format": {"horizontalAlignment": "CENTER"}},
-            {"range": rng(c[0], m0, c[4], m0), "format": {"backgroundColor": GREY, "textFormat": {"bold": True}}},
-            {"range": rng(c[0], m0 + 1, c[4], m0 + 1), "format": {"backgroundColor": BLUE, "textFormat": {"bold": True}}},
-            {"range": rng(c[0], m0 + 2, c[4], m0 + 2),
-             "format": {"backgroundColor": PINK, "numberFormat": {"type": "NUMBER", "pattern": "0"}}},
-            {"range": rng(c[0], m0 + 3, c[4], m0 + 3),
-             "format": {"backgroundColor": GREY, "textFormat": {"bold": True},
-                        "numberFormat": {"type": "NUMBER", "pattern": "0.00"}}},
-            {"range": rng(c[0], hr, c[4], hr), "format": {"backgroundColor": BLUE, "textFormat": {"bold": True}}},
-            {"range": rng(c[0], tr0, c[4], tr0), "format": {"backgroundColor": BLUE, "textFormat": {"bold": True}}},
-        ])
+        fmt(rng(c[0], 1, c[4], 17), {"horizontalAlignment": "CENTER"})
+        fmt(rng(c[0], 1, c[4], 1), {"backgroundColor": GREY, "textFormat": {"bold": True}})
+        fmt(rng(c[0], 2, c[4], 3), {"backgroundColor": BLUE, "textFormat": {"bold": True}})
+        fmt(rng(c[0], 4, c[4], 4), {"backgroundColor": PINK, "numberFormat": {"type": "NUMBER", "pattern": "0"}})
+        fmt(rng(c[0], 5, c[4], 5), {"backgroundColor": GREY, "textFormat": {"bold": True},
+                                    "numberFormat": {"type": "NUMBER", "pattern": "0.00"}})
+        fmt(rng(c[0], hr, c[4], hr), {"backgroundColor": BLUE, "textFormat": {"bold": True}})
+        fmt(rng(c[0], tr0, c[4], tr0), {"backgroundColor": BLUE, "textFormat": {"bold": True}})
         for a, b in ((hr + 1, hr + 5), (tr0 + 1, tr0 + 5)):
-            fmts.extend([
-                {"range": rng(c[0], a, c[0], b),
-                 "format": {"backgroundColor": PINK, "numberFormat": {"type": "NUMBER", "pattern": "0"}}},
-                {"range": rng(c[4], a, c[4], b),
-                 "format": {"backgroundColor": PINK, "numberFormat": {"type": "NUMBER", "pattern": "0"}}},
-                {"range": rng(c[1], a, c[1], b),
-                 "format": {"backgroundColor": GREY, "numberFormat": {"type": "NUMBER", "pattern": "0.00"}}},
-                {"range": rng(c[3], a, c[3], b),
-                 "format": {"backgroundColor": GREY, "numberFormat": {"type": "NUMBER", "pattern": "0.00"}}},
-                {"range": rng(c[2], a, c[2], b), "format": {"backgroundColor": BLUE}},
-            ])
-        fmts.extend([
-            {"range": rng(c[2], hr + 1, c[2], hr + 5),
-             "format": {"numberFormat": {"type": "NUMBER", "pattern": "+0.0;-0.0;0"}}},
-            {"range": rng(c[2], tr0 + 1, c[2], tr0 + 5),
-             "format": {"numberFormat": {"type": "NUMBER", "pattern": "0.0"}}},
-            {"range": rng(c[0], hr + 3, c[4], hr + 3), "format": {"textFormat": {"bold": True}}},
-            {"range": rng(c[2], hr + 3, c[2], hr + 3), "format": {"backgroundColor": MIDC}},
-            {"range": rng(c[0], mid, c[4], mid), "format": {"textFormat": {"bold": True}}},
-            {"range": rng(c[2], mid, c[2], mid), "format": {"backgroundColor": MIDC}},
-        ])
+            fmt(rng(c[0], a, c[0], b), {"backgroundColor": PINK, "numberFormat": {"type": "NUMBER", "pattern": "0"}})
+            fmt(rng(c[4], a, c[4], b), {"backgroundColor": PINK, "numberFormat": {"type": "NUMBER", "pattern": "0"}})
+            fmt(rng(c[1], a, c[1], b), {"backgroundColor": GREY, "numberFormat": {"type": "NUMBER", "pattern": "0.00"}})
+            fmt(rng(c[3], a, c[3], b), {"backgroundColor": GREY, "numberFormat": {"type": "NUMBER", "pattern": "0.00"}})
+            fmt(rng(c[2], a, c[2], b), {"backgroundColor": BLUE})
+        fmt(rng(c[2], hr + 1, c[2], hr + 5), {"numberFormat": {"type": "NUMBER", "pattern": "+0.0;-0.0;0"}})
+        fmt(rng(c[2], tr0 + 1, c[2], tr0 + 5), {"numberFormat": {"type": "NUMBER", "pattern": "0.0"}})
+        fmt(rng(c[0], hr + 3, c[4], hr + 3), {"textFormat": {"bold": True}})
+        fmt(rng(c[2], hr + 3, c[2], hr + 3), {"backgroundColor": MIDC})
+        fmt(rng(c[0], mid, c[4], mid), {"textFormat": {"bold": True}})
+        fmt(rng(c[2], mid, c[2], mid), {"backgroundColor": MIDC})
 
-    block("ВСЕ ТУРНИРЫ", '="* ВСЕ ТУРНИРЫ ("&$B$2&" - "&$B$4&")"',
-          "B", "C", "M", use_tour=False, use_team=False, mkt_col0="A")
-    block("ТУРНИР", '=$B$1&" ("&$B$2&" - "&$B$4&")"',
-          "D", "E", "V", use_tour=True, use_team=True, mkt_col0="G")
-    put(f"D{R0 - 2}", '="ТУРНИР: "&$B$1')
+    # left: tournament + teams, right: all tournaments
+    block("Q", "R", f'="ТУРНИР: "&{TOUR}', "V", True, True, "A", "inputs")
+    block("S", "T", "ВСЕ ТУРНИРЫ", "AE", False, False, "G", "all")
 
-    # ---- dropdown lists (from PAIRS: player, opp, tournament, team, opp_team) ----
+    # ---- dropdown lists AN:AR (from PAIRS: player, opp, tournament, team, opp_team) ----
     PA, PB, PC, PD, PE = (f"PAIRS!{x}2:{x}" for x in "ABCDE")
-    put("AE1", "Турниры")
-    put("AE2", f'=IFERROR(VSTACK("*",SORT(UNIQUE(FILTER({PC},{PA}=$B$2,'
-               f'(($B$4="")+({PB}=$B$4))>0)))),"*")')
-    put("AF1", "Игроки")
-    put("AF2", f'=IFERROR(SORT(UNIQUE(FILTER({PA},{PA}<>""))),"")')
-    put("AG1", "Соперники")
-    put("AG2", f'=IFERROR(SORT(UNIQUE(FILTER({PB},{PA}=$B$2))),"")')
-    for col, src in (("AH", PD), ("AI", PE)):
-        put(f"{col}1", "Команды P1" if col == "AH" else "Команды P2")
-        put(f"{col}2", f'=IFERROR(VSTACK("*",SORT(UNIQUE(FILTER({src},{PA}=$B$2,{PB}=$B$4,'
-                       f'(($B$1="*")+({PC}=$B$1))>0)))),"*")')
+    put("AN1", "Турниры")
+    put("AN2", f'=IFERROR(VSTACK("*",SORT(UNIQUE(FILTER({PC},{PA}={PL1},'
+               f'(({PL2}="")+({PB}={PL2}))>0)))),"*")')
+    put("AO1", "Игроки")
+    put("AO2", f'=IFERROR(SORT(UNIQUE(FILTER({PA},{PA}<>""))),"")')
+    put("AP1", "Соперники")
+    put("AP2", f'=IFERROR(SORT(UNIQUE(FILTER({PB},{PA}={PL1}))),"")')
+    for col, src in (("AQ", PD), ("AR", PE)):
+        put(f"{col}1", "Команды P1" if col == "AQ" else "Команды P2")
+        put(f"{col}2", f'=IFERROR(VSTACK("*",SORT(UNIQUE(FILTER({src},{PA}={PL1},{PB}={PL2},'
+                       f'(({TOUR}="*")+({PC}={TOUR}))>0)))),"*")')
+    fmt("AN1:AR1", {"textFormat": {"bold": True}})
 
     ws.batch_update(cells, value_input_option="USER_ENTERED")
-
-    fmts += [
-        {"range": "B6:B7", "format": {"numberFormat": {"type": "DATE", "pattern": "dd.mm.yyyy"}}},
-        {"range": f"A1:A{R0 + 11}", "format": {"textFormat": {"bold": True}}},
-        {"range": "AE1:AI1", "format": {"textFormat": {"bold": True}}},
-    ]
     ws.batch_format(fmts)
 
-    def dv(row, col, src):
+    def dv(a1, src):
+        cc = "".join(ch for ch in a1 if ch.isalpha())
+        rr = int("".join(ch for ch in a1 if ch.isdigit()))
         return {"setDataValidation": {
-            "range": {"sheetId": ws.id, "startRowIndex": row - 1, "endRowIndex": row,
-                      "startColumnIndex": col - 1, "endColumnIndex": col},
+            "range": grid(cc, rr, cc, rr),
             "rule": {"condition": {"type": "ONE_OF_RANGE",
                                    "values": [{"userEnteredValue": src}]},
                      "showCustomUi": True, "strict": False}}}
 
-    sh.batch_update({"requests": reqs + [
-        dv(1, 2, f"={CALC_NAME}!$AE$2:$AE"),
-        dv(2, 2, f"={CALC_NAME}!$AF$2:$AF"),
-        dv(3, 2, f"={CALC_NAME}!$AH$2:$AH"),
-        dv(4, 2, f"={CALC_NAME}!$AG$2:$AG"),
-        dv(5, 2, f"={CALC_NAME}!$AI$2:$AI"),
+    widths = [{"updateDimensionProperties": {
+        "range": {"sheetId": ws.id, "dimension": "COLUMNS",
+                  "startIndex": colnum(a) - 1, "endIndex": colnum(b)},
+        "properties": {"pixelSize": px}, "fields": "pixelSize"}}
+        for a, b, px in (("A", "K", 85), ("F", "F", 20), ("L", "L", 20), ("O", "O", 20),
+                         ("M", "N", 110), ("P", "P", 150), ("Q", "T", 85))]
+
+    sh.batch_update({"requests": reqs + widths + [
+        dv("A1", f"={CALC_NAME}!$AN$2:$AN"),
+        dv("A2", f"={CALC_NAME}!$AQ$2:$AQ"),
+        dv("D2", f"={CALC_NAME}!$AR$2:$AR"),
+        dv("A3", f"={CALC_NAME}!$AO$2:$AO"),
+        dv("D3", f"={CALC_NAME}!$AP$2:$AP"),
     ]})
     print("CALC built")
 
