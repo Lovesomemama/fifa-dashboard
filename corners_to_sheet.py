@@ -328,6 +328,22 @@ HC = "BT"                # chart data (7 cols)
 HLS = "CB"               # dropdown lists (5 cols)
 
 
+MARKER_CELL, MARKER = "AK1", "Дата"   # last thing written -> build complete
+
+
+def retry(fn, *a, **k):
+    for attempt in range(6):
+        try:
+            return fn(*a, **k)
+        except gspread.exceptions.APIError as e:
+            code = getattr(getattr(e, "response", None), "status_code", 0)
+            if attempt == 5 or code not in (429, 500, 502, 503):
+                raise
+            wait = 5 * 2 ** attempt
+            print(f"API {code}, retry in {wait}s")
+            time.sleep(wait)
+
+
 def build_calc(sh):
     ws = sh.add_worksheet(CALC_NAME, rows=200, cols=90, index=0)
     cells, fmts, reqs = [], [], []
@@ -709,8 +725,10 @@ def build_calc(sh):
                        f'(({TOUR}="*")+({PC}={TOUR}))>0)))),"*")')
     fmt(f"{ls[0]}1:{ls[4]}1", {"textFormat": {"bold": True}, "backgroundColor": GREY})
 
-    ws.batch_update(cells, value_input_option="USER_ENTERED")
-    ws.batch_format(fmts)
+    # formats first (empty sheet = cheap), values last (heavy recalculation)
+    for i in range(0, len(fmts), 25):
+        retry(ws.batch_format, fmts[i:i + 25])
+    print("CALC formats ok")
 
     def dv(a1, src):
         cc = "".join(ch for ch in a1 if ch.isalpha())
@@ -756,7 +774,7 @@ def build_calc(sh):
                 "anchorCell": {"sheetId": ws.id, "rowIndex": 18, "columnIndex": colnum(anchor_col) - 1},
                 "widthPixels": 470, "heightPixels": 400}}}}}
 
-    sh.batch_update({"requests": reqs + widths + [
+    retry(sh.batch_update, {"requests": reqs + widths + [
         dv("A1", f"={CALC_NAME}!${ls[0]}$2:${ls[0]}"),
         dv("A3", f"={CALC_NAME}!${ls[1]}$2:${ls[1]}"),
         dv("D3", f"={CALC_NAME}!${ls[2]}$2:${ls[2]}"),
@@ -765,10 +783,22 @@ def build_calc(sh):
         line_chart("Средняя разница угловых", hc[3], hc[4], hc[6], "A"),
         line_chart("Средний тотал угловых", hc[1], hc[2], hc[5], "G"),
     ]})
+    print("CALC layout ok")
+
+    marker = [c for c in cells if c["range"] == MARKER_CELL]
+    body = [c for c in cells if c["range"] != MARKER_CELL]
+    for i in range(0, len(body), 80):
+        retry(ws.batch_update, body[i:i + 80], value_input_option="USER_ENTERED")
+        time.sleep(1)
+    retry(ws.batch_update, marker, value_input_option="USER_ENTERED")
     print("CALC built")
 
 
-if CALC_NAME not in [w.title for w in sh.worksheets()]:
+existing = {w.title: w for w in sh.worksheets()}
+if CALC_NAME in existing and existing[CALC_NAME].acell(MARKER_CELL).value != MARKER:
+    print("CALC incomplete -> rebuild")
+    retry(sh.del_worksheet, existing.pop(CALC_NAME))
+if CALC_NAME not in existing:
     build_calc(sh)
 else:
     print("CALC exists, skipped")
