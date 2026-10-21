@@ -350,13 +350,15 @@ def chart_requests(sheet_id):
         return {"sourceRange": {"sources": [{"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 71,
                                              "startColumnIndex": colnum(col) - 1, "endColumnIndex": colnum(col)}]}}
 
-    def ser(col, rgb, width):
+    def ser(col, rgb, width, label_col=None):
+        dl = ({"type": "CUSTOM", "customLabelData": src(label_col), "placement": "ABOVE"}
+              if label_col else {"type": "NONE"})
         return {"series": src(col), "targetAxis": "LEFT_AXIS",
                 "colorStyle": {"rgbColor": rgb}, "color": rgb,
                 "lineStyle": {"width": width, "type": "SOLID"},
-                "dataLabel": {"type": "NONE"}}
+                "dataLabel": dl}
 
-    def chart(title, ycol, trend, anchor_col, vmin=None, vmax=None):
+    def chart(title, ycol, trend, label_col, anchor_col, vmin=None, vmax=None):
         left = {"position": "LEFT_AXIS"}
         if vmin is not None:
             left["viewWindowOptions"] = {"viewWindowMin": vmin, "viewWindowMax": vmax, "viewWindowMode": "EXPLICIT"}
@@ -367,7 +369,7 @@ def chart_requests(sheet_id):
                     "chartType": "LINE", "legendPosition": "NO_LEGEND", "headerCount": 1,
                     "axis": [{"position": "BOTTOM_AXIS"}, left],
                     "domains": [{"domain": src(hc[0])}],
-                    "series": [ser(ycol, {"red": 0.26, "green": 0.52, "blue": 0.96}, 2),
+                    "series": [ser(ycol, {"red": 0.26, "green": 0.52, "blue": 0.96}, 2, label_col),
                                ser(trend, {"red": 0.62, "green": 0.74, "blue": 0.98}, 2)],
                     "interpolateNulls": True,
                 }},
@@ -375,8 +377,23 @@ def chart_requests(sheet_id):
                 "anchorCell": {"sheetId": sheet_id, "rowIndex": 18, "columnIndex": colnum(anchor_col) - 1},
                 "widthPixels": 470, "heightPixels": 400}}}}}
 
-    return [chart("Средняя разница угловых", hc[3], hc[6], "A", -3, 3),
-            chart("Средний тотал угловых", hc[1], hc[5], "G")]
+    return [chart("Средняя разница угловых", hc[3], hc[6], LBL[1], "A", -3, 3),
+            chart("Средний тотал угловых", hc[1], hc[5], LBL[0], "G")]
+
+
+LBL = ("CH", "CI")      # chart point labels: total, diff
+LBL_STEP = 7            # one label every N days, counted back from the last point
+
+
+def label_cells():
+    hc = [colstr(colnum(HC) + i) for i in range(7)]
+    out = []
+    for lc, yc, name in ((LBL[0], hc[1], "Метки тотала"), (LBL[1], hc[3], "Метки разницы")):
+        Y = f"{yc}2:{yc}71"
+        out += [{"range": f"{lc}1", "values": [[name]]},
+                {"range": f"{lc}2", "values": [[
+                    f'=ARRAYFORMULA(IF(ISNUMBER({Y})*(MOD(71-ROW({Y}),{LBL_STEP})=0),TEXT({Y},"0.00"),""))']]}]
+    return out
 
 
 def refresh_charts(sh, ws):
@@ -384,12 +401,14 @@ def refresh_charts(sh, ws):
     ids = [c["chartId"] for s in meta["sheets"] if s["properties"]["sheetId"] == ws.id
            for c in s.get("charts", [])]
     reqs = [{"deleteEmbeddedObject": {"objectId": i}} for i in ids]
+    retry(ws.batch_update, label_cells(), value_input_option="USER_ENTERED")
     retry(sh.batch_update, {"requests": reqs + chart_requests(ws.id)})
     print(f"CALC charts refreshed ({len(ids)} removed)")
 
 
-def build_calc(sh):
-    ws = sh.add_worksheet(CALC_NAME, rows=200, cols=90, index=0)
+def build_calc(sh, name):
+    ws = sh.add_worksheet(name, rows=200, cols=90, index=0)
+    ref = f"'{name}'"
     cells, fmts, reqs = [], [], []
 
     def put(a1, v):
@@ -790,12 +809,13 @@ def build_calc(sh):
                          ("M", "N", 110), ("P", "P", 150), ("Q", "AB", 55),
                          ("AH", "AI", 120))]
 
+    retry(ws.batch_update, label_cells(), value_input_option="USER_ENTERED")
     retry(sh.batch_update, {"requests": reqs + widths + [
-        dv("A1", f"={CALC_NAME}!${ls[0]}$2:${ls[0]}"),
-        dv("A3", f"={CALC_NAME}!${ls[1]}$2:${ls[1]}"),
-        dv("D3", f"={CALC_NAME}!${ls[2]}$2:${ls[2]}"),
-        dv("A2", f"={CALC_NAME}!${ls[3]}$2:${ls[3]}"),
-        dv("D2", f"={CALC_NAME}!${ls[4]}$2:${ls[4]}"),
+        dv("A1", f"={ref}!${ls[0]}$2:${ls[0]}"),
+        dv("A3", f"={ref}!${ls[1]}$2:${ls[1]}"),
+        dv("D3", f"={ref}!${ls[2]}$2:${ls[2]}"),
+        dv("A2", f"={ref}!${ls[3]}$2:${ls[3]}"),
+        dv("D2", f"={ref}!${ls[4]}$2:${ls[4]}"),
     ] + chart_requests(ws.id)})
     print("CALC layout ok")
 
@@ -806,12 +826,14 @@ def build_calc(sh):
     print("CALC built")
 
 
-existing = {w.title: w for w in sh.worksheets()}
-if CALC_NAME in existing and existing[CALC_NAME].acell(MARKER_CELL).value != MARKER:
-    print("CALC incomplete -> rebuild")
-    retry(sh.del_worksheet, existing.pop(CALC_NAME))
-if CALC_NAME not in existing:
-    build_calc(sh)
+# CALC is touched ONLY on manual run with "build_calc" = true.
+# A manual build always creates a NEW tab CALC_v1, CALC_v2, ... ; existing tabs are never modified or deleted.
+# Daily / scheduled runs update DB_Corners + PAIRS only.
+if os.environ.get("BUILD_CALC", "0") == "1":
+    nums = [int(m.group(1)) for w in sh.worksheets()
+            for m in [re.fullmatch(rf"{CALC_NAME}_v(\d+)", w.title)] if m]
+    new_name = f"{CALC_NAME}_v{max(nums, default=0) + 1}"
+    print("building", new_name)
+    build_calc(sh, new_name)
 else:
-    print("CALC exists, formulas kept")
-    refresh_charts(sh, existing[CALC_NAME])
+    print("data only: CALC tabs not touched")
