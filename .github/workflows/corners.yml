@@ -1,8 +1,14 @@
 name: corners-to-sheet
 on:
   schedule:
-    - cron: "30 6 * * *"   # 07:30 Madrid / 08:30 Kyiv (winter). Summer (end of March): "30 5 * * *"
+    - cron: "47 6 * * *"   # ~08:47 Madrid until 25.10, then ~07:47
+    - cron: "47 9 * * *"   # backup run if GitHub delays/skips the morning one
   workflow_dispatch:
+    inputs:
+      build_calc:
+        description: "Build a new calculator tab (CALC_v1, CALC_v2, ...)"
+        type: boolean
+        default: false
 
 permissions:
   actions: write
@@ -23,6 +29,7 @@ jobs:
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
           GSHEET_ID: ${{ secrets.GSHEET_ID }}
           DAYS_BACK: "180"
+          BUILD_CALC: ${{ github.event_name == 'workflow_dispatch' && inputs.build_calc && '1' || '0' }}
       - name: keepalive (re-enable schedule, no commits)
         run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/corners.yml/enable"
         env:
