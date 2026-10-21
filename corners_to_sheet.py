@@ -202,6 +202,7 @@ print(f"files={len(files)} matches={len(out)}")
 
 TOUR, T1, T2, PL1, PL2 = "$A$1", "$A$2", "$D$2", "$A$3", "$D$3"
 WIN, DFROM, HALF, DTO, MF, MX = "$M$2", "$N$2", "$M$4", "$N$4", "$M$6", "$N$6"
+WFIX, SRC = "$M$8", "$N$8"   # FIX weight in FIX|WEST mix, probability source (Пуассон / Факт)
 SR0 = 3   # first summary metric row
 
 
@@ -249,19 +250,32 @@ def guard(f, cnt):
     return f'=IF({cnt}=0,"",' + f[1:] + ')'
 
 
-def _pm(la, lb, tail, cnt, mcell):
-    return guard('=IFERROR(ARRAYFORMULA(LET(la,' + la + ',lb,' + lb + ','
-                 'i,MAKEARRAY(31,31,LAMBDA(r,c,r-1)),j,MAKEARRAY(31,31,LAMBDA(r,c,c-1)),'
-                 'm,POISSON.DIST(i,la,FALSE)*POISSON.DIST(j,lb,FALSE),'
-                 '(' + tail + ')/(1+' + mcell + '))),"")', cnt)
+def odds(p, n, mcell):
+    # FIX|WEST mix: odds = (1-M) / ((1 - w*M)*p + w*M/n)
+    #   w=0 -> WEST (payout (1-M)/p),  w=1 -> FIX (equal +M/n on every outcome)
+    return f"(1-{mcell})/((1-{WFIX}*{mcell})*({p})+{WFIX}*{mcell}/{n})"
 
 
-def mxa(win, push, la, lb, cnt):
-    return _pm(la, lb, '(1-SUM(m*(' + push + ')))/SUM(m*(' + win + '))', cnt, MF)
+def priced(p_pois, p_fact, n, mcell, cnt):
+    return guard(f'=IFERROR(IF({SRC}="Факт",{odds(p_fact, n, mcell)},{odds(p_pois, n, mcell)}),"")', cnt)
 
 
-def mx(cond, la, lb, cnt):
-    return _pm(la, lb, '1/SUM(m*(' + cond + '))', cnt, MX)
+def _pm(la, lb, p_expr, p_fact, n, mcell, cnt):
+    pois = ('LET(la,' + la + ',lb,' + lb + ','
+            'i,MAKEARRAY(31,31,LAMBDA(r,c,r-1)),j,MAKEARRAY(31,31,LAMBDA(r,c,c-1)),'
+            'm,POISSON.DIST(i,la,FALSE)*POISSON.DIST(j,lb,FALSE),' + p_expr + ')')
+    return guard(f'=IFERROR(IF({SRC}="Факт",{odds(p_fact, n, mcell)},'
+                 f'ARRAYFORMULA({odds(pois, n, mcell)})),"")', cnt)
+
+
+def mxa(win, push, la, lb, cnt, p_fact):
+    # 2-way handicap, push excluded
+    return _pm(la, lb, '(SUM(m*(' + win + '))/(1-SUM(m*(' + push + '))))', p_fact, 2, MF, cnt)
+
+
+def mx(cond, la, lb, cnt, p_fact):
+    # 3-way 1X2
+    return _pm(la, lb, 'SUM(m*(' + cond + '))', p_fact, 3, MX, cnt)
 
 
 BLUE = {"red": 0.79, "green": 0.85, "blue": 0.97}
@@ -291,10 +305,14 @@ def build_calc(sh):
     # ---- settings M:N ----
     for a1, v in (("M1", "Выборка дней"), ("N1", "От"), ("M2", 60), ("N2", "=N4-M2"),
                   ("M3", "Полураспад, дн"), ("N3", "До"), ("M4", 30), ("N4", "=TODAY()"),
-                  ("M5", "Маржа Ф/Тотал"), ("N5", "Маржа 1X2"), ("M6", 0.075), ("N6", 0.10)):
+                  ("M5", "Маржа Ф/Тотал"), ("N5", "Маржа 1X2"), ("M6", 0.075), ("N6", 0.10),
+                  ("M7", "Вес FIX"), ("N7", "Вероятность"), ("M8", 0.4), ("N8", "Пуассон")):
         put(a1, v)
-    fmt("M1:N6", {"horizontalAlignment": "CENTER"})
-    for rr in (1, 3, 5):
+    fmt("M1:N8", {"horizontalAlignment": "CENTER"})
+    fmt("M8", {"backgroundColor": GOLD, "textFormat": {"bold": True},
+               "numberFormat": {"type": "NUMBER", "pattern": "0.00"}})
+    fmt("N8", {"backgroundColor": GOLD, "textFormat": {"bold": True}})
+    for rr in (1, 3, 5, 7):
         fmt(f"M{rr}:N{rr}", {"backgroundColor": BLUE, "textFormat": {"bold": True}})
     fmt("M2:M4", {"backgroundColor": GREY})
     fmt("N2", {"backgroundColor": PINK, "numberFormat": {"type": "DATE", "pattern": "dd.mm.yyyy"}})
@@ -391,9 +409,10 @@ def build_calc(sh):
             merge(c[0], rr, c[1], rr); merge(c[3], rr, c[4], rr)
 
         # W/D/L
+        n3 = f"(${c[0]}$4+${c[2]}$4+${c[3]}$4)"
         for cc, cond, mcond in ((c[0], f"{D}>0", "i>j"), (c[2], f"{D}=0", "i=j"), (c[3], f"{D}<0", "i<j")):
             put(f"{cc}4", cntf(cond))
-            put(f"{cc}5", mx(mcond, l1, l2, cnt))
+            put(f"{cc}5", mx(mcond, l1, l2, cnt, f"${cc}$4/{n3}"))
 
         # handicap rows 6-11
         hr = 6
@@ -405,8 +424,9 @@ def build_calc(sh):
             L = f"${c[2]}${rr}"
             put(f"{c[2]}{rr}", h)
             put(f"{c[0]}{rr}", cntf(f"{D}+{L}>0"))
-            put(f"{c[1]}{rr}", mxa(f"i-j+{L}>0", f"i-j+{L}=0", l1, l2, cnt))
-            put(f"{c[3]}{rr}", mxa(f"i-j+{L}<0", f"i-j+{L}=0", l1, l2, cnt))
+            A, E = f"${c[0]}${rr}", f"${c[4]}${rr}"
+            put(f"{c[1]}{rr}", mxa(f"i-j+{L}>0", f"i-j+{L}=0", l1, l2, cnt, f"{A}/({A}+{E})"))
+            put(f"{c[3]}{rr}", mxa(f"i-j+{L}<0", f"i-j+{L}=0", l1, l2, cnt, f"{E}/({A}+{E})"))
             put(f"{c[4]}{rr}", cntf(f"{D}+{L}<0"))
 
         # total rows 12-17
@@ -425,8 +445,11 @@ def build_calc(sh):
                 put(f"{c[2]}{rr}", guard(f"={c[2]}{mid}{rr - mid:+d}", cnt))
             push = f"IF({L}=INT({L}),POISSON.DIST({L},{lam},FALSE),0)"
             put(f"{c[0]}{rr}", cntf(f"{T}>{L}"))
-            put(f"{c[1]}{rr}", guard(f'=IFERROR((1-{push})/(1-POISSON.DIST(FLOOR({L}),{lam},TRUE))/(1+{MF}),"")', cnt))
-            put(f"{c[3]}{rr}", guard(f'=IFERROR((1-{push})/POISSON.DIST(CEILING({L})-1,{lam},TRUE)/(1+{MF}),"")', cnt))
+            A, E = f"${c[0]}${rr}", f"${c[4]}${rr}"
+            p_over = f"(1-POISSON.DIST(FLOOR({L}),{lam},TRUE))/(1-{push})"
+            p_under = f"POISSON.DIST(CEILING({L})-1,{lam},TRUE)/(1-{push})"
+            put(f"{c[1]}{rr}", priced(p_over, f"{A}/({A}+{E})", 2, MF, cnt))
+            put(f"{c[3]}{rr}", priced(p_under, f"{E}/({A}+{E})", 2, MF, cnt))
             put(f"{c[4]}{rr}", cntf(f"{T}<{L}"))
 
         rng = lambda c1, r1, c2, r2: f"{c1}{r1}:{c2}{r2}"
@@ -490,6 +513,10 @@ def build_calc(sh):
                          ("M", "N", 110), ("P", "P", 150), ("Q", "T", 85))]
 
     sh.batch_update({"requests": reqs + widths + [
+        {"setDataValidation": {"range": grid("N", 8, "N", 8),
+            "rule": {"condition": {"type": "ONE_OF_LIST",
+                                   "values": [{"userEnteredValue": "Пуассон"}, {"userEnteredValue": "Факт"}]},
+                     "showCustomUi": True, "strict": True}}},
         dv("A1", f"={CALC_NAME}!$AN$2:$AN"),
         dv("A2", f"={CALC_NAME}!$AQ$2:$AQ"),
         dv("D2", f"={CALC_NAME}!$AR$2:$AR"),
