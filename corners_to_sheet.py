@@ -328,7 +328,7 @@ HC = "BT"                # chart data (7 cols)
 HLS = "CB"               # dropdown lists (5 cols)
 
 
-MARKER_CELL, MARKER = "AK1", "Дата"   # last thing written -> build complete
+MARKER_CELL, MARKER = "AH1", "CALC v2 ok"   # written last -> build complete
 
 
 def retry(fn, *a, **k):
@@ -785,12 +785,10 @@ def build_calc(sh):
     ]})
     print("CALC layout ok")
 
-    marker = [c for c in cells if c["range"] == MARKER_CELL]
-    body = [c for c in cells if c["range"] != MARKER_CELL]
-    for i in range(0, len(body), 80):
-        retry(ws.batch_update, body[i:i + 80], value_input_option="USER_ENTERED")
+    for i in range(0, len(cells), 80):
+        retry(ws.batch_update, cells[i:i + 80], value_input_option="USER_ENTERED")
         time.sleep(1)
-    retry(ws.batch_update, marker, value_input_option="USER_ENTERED")
+    retry(ws.update, [[MARKER]], MARKER_CELL)
     print("CALC built")
 
 
