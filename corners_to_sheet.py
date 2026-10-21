@@ -343,6 +343,50 @@ def retry(fn, *a, **k):
             print(f"API {code}, retry in {wait}s")
             time.sleep(wait)
 
+def chart_requests(sheet_id):
+    hc = [colstr(colnum(HC) + i) for i in range(7)]
+
+    def src(col):
+        return {"sourceRange": {"sources": [{"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 71,
+                                             "startColumnIndex": colnum(col) - 1, "endColumnIndex": colnum(col)}]}}
+
+    def ser(col, rgb, width):
+        return {"series": src(col), "targetAxis": "LEFT_AXIS",
+                "colorStyle": {"rgbColor": rgb}, "color": rgb,
+                "lineStyle": {"width": width, "type": "SOLID"},
+                "dataLabel": {"type": "NONE"}}
+
+    def chart(title, ycol, trend, anchor_col, vmin=None, vmax=None):
+        left = {"position": "LEFT_AXIS"}
+        if vmin is not None:
+            left["viewWindowOptions"] = {"viewWindowMin": vmin, "viewWindowMax": vmax, "viewWindowMode": "EXPLICIT"}
+        return {"addChart": {"chart": {
+            "spec": {
+                "title": title,
+                "basicChart": {
+                    "chartType": "LINE", "legendPosition": "NO_LEGEND", "headerCount": 1,
+                    "axis": [{"position": "BOTTOM_AXIS"}, left],
+                    "domains": [{"domain": src(hc[0])}],
+                    "series": [ser(ycol, {"red": 0.26, "green": 0.52, "blue": 0.96}, 2),
+                               ser(trend, {"red": 0.62, "green": 0.74, "blue": 0.98}, 2)],
+                    "interpolateNulls": True,
+                }},
+            "position": {"overlayPosition": {
+                "anchorCell": {"sheetId": sheet_id, "rowIndex": 18, "columnIndex": colnum(anchor_col) - 1},
+                "widthPixels": 470, "heightPixels": 400}}}}}
+
+    return [chart("Средняя разница угловых", hc[3], hc[6], "A", -3, 3),
+            chart("Средний тотал угловых", hc[1], hc[5], "G")]
+
+
+def refresh_charts(sh, ws):
+    meta = sh.fetch_sheet_metadata({"fields": "sheets(properties.sheetId,charts.chartId)"})
+    ids = [c["chartId"] for s in meta["sheets"] if s["properties"]["sheetId"] == ws.id
+           for c in s.get("charts", [])]
+    reqs = [{"deleteEmbeddedObject": {"objectId": i}} for i in ids]
+    retry(sh.batch_update, {"requests": reqs + chart_requests(ws.id)})
+    print(f"CALC charts refreshed ({len(ids)} removed)")
+
 
 def build_calc(sh):
     ws = sh.add_worksheet(CALC_NAME, rows=200, cols=90, index=0)
@@ -746,43 +790,13 @@ def build_calc(sh):
                          ("M", "N", 110), ("P", "P", 150), ("Q", "AB", 55),
                          ("AH", "AI", 120))]
 
-    def src(col, r1=1, r2=71):
-        return {"sourceRange": {"sources": [grid(col, r1, col, r2)]}}
-
-    def line_chart(title, ycol_all, ycol_tour, ycol_trend, anchor_col):
-        return {"addChart": {"chart": {
-            "spec": {
-                "title": title,
-                "basicChart": {
-                    "chartType": "LINE", "legendPosition": "NO_LEGEND", "headerCount": 1,
-                    "axis": [{"position": "BOTTOM_AXIS"}, {"position": "LEFT_AXIS"}],
-                    "domains": [{"domain": src(hc[0])}],
-                    "series": [
-                        {"series": src(ycol_all), "targetAxis": "LEFT_AXIS",
-                         "colorStyle": {"rgbColor": {"red": 0.26, "green": 0.52, "blue": 0.96}},
-                         "lineStyle": {"width": 2, "type": "SOLID"}},
-                        {"series": src(ycol_tour), "targetAxis": "LEFT_AXIS",
-                         "colorStyle": {"rgbColor": {"red": 0.92, "green": 0.26, "blue": 0.21}},
-                         "lineStyle": {"width": 2, "type": "DOTTED"}},
-                        {"series": src(ycol_trend), "targetAxis": "LEFT_AXIS",
-                         "colorStyle": {"rgbColor": {"red": 0.62, "green": 0.74, "blue": 0.98}},
-                         "lineStyle": {"width": 2, "type": "SOLID"}},
-                    ],
-                    "interpolateNulls": True,
-                }},
-            "position": {"overlayPosition": {
-                "anchorCell": {"sheetId": ws.id, "rowIndex": 18, "columnIndex": colnum(anchor_col) - 1},
-                "widthPixels": 470, "heightPixels": 400}}}}}
-
     retry(sh.batch_update, {"requests": reqs + widths + [
         dv("A1", f"={CALC_NAME}!${ls[0]}$2:${ls[0]}"),
         dv("A3", f"={CALC_NAME}!${ls[1]}$2:${ls[1]}"),
         dv("D3", f"={CALC_NAME}!${ls[2]}$2:${ls[2]}"),
         dv("A2", f"={CALC_NAME}!${ls[3]}$2:${ls[3]}"),
         dv("D2", f"={CALC_NAME}!${ls[4]}$2:${ls[4]}"),
-        line_chart("Средняя разница угловых", hc[3], hc[4], hc[6], "A"),
-        line_chart("Средний тотал угловых", hc[1], hc[2], hc[5], "G"),
-    ]})
+    ] + chart_requests(ws.id)})
     print("CALC layout ok")
 
     for i in range(0, len(cells), 80):
@@ -799,4 +813,5 @@ if CALC_NAME in existing and existing[CALC_NAME].acell(MARKER_CELL).value != MAR
 if CALC_NAME not in existing:
     build_calc(sh)
 else:
-    print("CALC exists, skipped")
+    print("CALC exists, formulas kept")
+    refresh_charts(sh, existing[CALC_NAME])
