@@ -490,8 +490,8 @@ def build_calc(sh, name):
         (36, "MO_P1", f"=IFERROR(SUMPRODUCT({M_WM},{M_A})/SUM({M_W}),0)"),
         (37, "MO_P2", f"=IFERROR(SUMPRODUCT({M_WM},{M_B})/SUM({M_W}),0)"),
         (39, "G_tour", f"=SUMPRODUCT({M_W}*{tmask})"),
-        (40, "a_tour", f"=IF(AI39>{NTOUR},{MAXT},AI39/({NTOUR}/{MAXT}))"),
-        (41, "a_tour_Res", f"=IF(AI39>{NTOUR},{TRES},AI39/({NTOUR}/{TRES}))"),
+        (40, "a_tour", f"=IF(AI39>{NTOUR},{MAXT},AI39*{MAXT}/{NTOUR})"),
+        (41, "a_tour_Res", f"=IF(AI39>{NTOUR},{TRES},AI39*{TRES}/{NTOUR})"),
         (42, "MO_P1_a", f"=IF(AI39>0,AI36*(1-AI40)+SUMPRODUCT({M_WM}*{tmask}*{M_A})/AI39*AI40,AI36)"),
         (43, "MO_P2_a", f"=IF(AI39>0,AI37*(1-AI40)+SUMPRODUCT({M_WM}*{tmask}*{M_B})/AI39*AI40,AI37)"),
         (46, "P_draw", f"=IFERROR(SUMPRODUCT({M_W}*({M_A}={M_B}))/SUM({M_W}),0)"),
@@ -526,8 +526,8 @@ def build_calc(sh, name):
         (72, "M_P1T1", "=IFERROR(AI64/AI63,1)"),
         (73, "S_P2T2", "=IFERROR(AI67/AI66,1)"),
         (74, "M_P2T2", "=IFERROR(AI69/AI68,1)"),
-        (76, "a_P1T1", f"=IF(AI60>{NPT},{MAXPT},AI60/({NPT}/{MAXPT}))"),
-        (77, "a_P2T2", f"=IF(AI65>{NPT},{MAXPT},AI65/({NPT}/{MAXPT}))"),
+        (76, "a_P1T1", f"=IF(AI60>{NPT},{MAXPT},AI60*{MAXPT}/{NPT})"),
+        (77, "a_P2T2", f"=IF(AI65>{NPT},{MAXPT},AI65*{MAXPT}/{NPT})"),
         (79, "S_T1+P1T1", "=IF(AI76>0,AI55*(1-AI76)+AI71*AI76,AI55)"),
         (80, "M_T1+P1T1", "=IF(AI76>0,AI56*(1-AI76)+AI72*AI76,AI56)"),
         (81, "S_T2+P2T2", "=IF(AI77>0,AI57*(1-AI77)+AI73*AI77,AI57)"),
@@ -1000,8 +1000,8 @@ def build_console(book):
         (36, "MO_P1", f"=IFERROR(SUMPRODUCT({M_WM},{M_A})/SUM({M_W}),0)"),
         (37, "MO_P2", f"=IFERROR(SUMPRODUCT({M_WM},{M_B})/SUM({M_W}),0)"),
         (39, "G_tour", f"=SUMPRODUCT({M_W}*{tmask})"),
-        (40, "a_tour", f"=IF({A(39)}>{s['NTOUR']},{s['MAXT']},{A(39)}/({s['NTOUR']}/{s['MAXT']}))"),
-        (41, "a_tour_Res", f"=IF({A(39)}>{s['NTOUR']},{s['TRES']},{A(39)}/({s['NTOUR']}/{s['TRES']}))"),
+        (40, "a_tour", f"=IF({A(39)}>{s['NTOUR']},{s['MAXT']},{A(39)}*{s['MAXT']}/{s['NTOUR']})"),
+        (41, "a_tour_Res", f"=IF({A(39)}>{s['NTOUR']},{s['TRES']},{A(39)}*{s['TRES']}/{s['NTOUR']})"),
         (42, "MO_P1_a", f"=IF({A(39)}>0,{A(36)}*(1-{A(40)})+SUMPRODUCT({M_WM}*{tmask}*{M_A})/{A(39)}*{A(40)},{A(36)})"),
         (43, "MO_P2_a", f"=IF({A(39)}>0,{A(37)}*(1-{A(40)})+SUMPRODUCT({M_WM}*{tmask}*{M_B})/{A(39)}*{A(40)},{A(37)})"),
         (46, "P_draw", f"=IFERROR(SUMPRODUCT({M_W}*({M_A}={M_B}))/SUM({M_W}),0)"),
@@ -1027,8 +1027,8 @@ def build_console(book):
     chain += [
         (71, "S_P1T1", f"=IFERROR({A(62)}/{A(61)},1)"), (72, "M_P1T1", f"=IFERROR({A(64)}/{A(63)},1)"),
         (73, "S_P2T2", f"=IFERROR({A(67)}/{A(66)},1)"), (74, "M_P2T2", f"=IFERROR({A(69)}/{A(68)},1)"),
-        (76, "a_P1T1", f"=IF({A(60)}>{s['NPT']},{s['MAXPT']},{A(60)}/({s['NPT']}/{s['MAXPT']}))"),
-        (77, "a_P2T2", f"=IF({A(65)}>{s['NPT']},{s['MAXPT']},{A(65)}/({s['NPT']}/{s['MAXPT']}))"),
+        (76, "a_P1T1", f"=IF({A(60)}>{s['NPT']},{s['MAXPT']},{A(60)}*{s['MAXPT']}/{s['NPT']})"),
+        (77, "a_P2T2", f"=IF({A(65)}>{s['NPT']},{s['MAXPT']},{A(65)}*{s['MAXPT']}/{s['NPT']})"),
         (79, "S_T1+P1T1", f"=IF({A(76)}>0,{A(55)}*(1-{A(76)})+{A(71)}*{A(76)},{A(55)})"),
         (80, "M_T1+P1T1", f"=IF({A(76)}>0,{A(56)}*(1-{A(76)})+{A(72)}*{A(76)},{A(56)})"),
         (81, "S_T2+P2T2", f"=IF({A(77)}>0,{A(57)}*(1-{A(77)})+{A(73)}*{A(77)},{A(57)})"),
@@ -1326,12 +1326,80 @@ def build_console(book):
     for k in range(0, len(cf), 25):
         retry(c1.batch_format, cf[k:k + 25])
     retry(book.batch_update, {"requests": team_move + moves})          # make room first
+    reqs.append({"updateDimensionProperties": {
+        "range": {"sheetId": c1.id, "dimension": "COLUMNS", "startIndex": colnum("U") - 1, "endIndex": colnum("U")},
+        "properties": {"pixelSize": 150}, "fields": "pixelSize"}})
     retry(book.batch_update, {"requests": reqs + charts})
     for k in range(0, len(ccells), 80):
         retry(c1.batch_update, ccells[k:k + 80], value_input_option="USER_ENTERED")
         time.sleep(1)
     retry(c1.update, [[X_MARK]], X_MARK_CELL)
     print(f"{C1}: corners block built: A{R0 + 1}:K{R0 + 17}, U{R0 + 1}:AD{R0 + 14}, settings AH{X_MARK_CELL[2:]}")
+
+
+# ---------------- one-off edit of an already built block (no rebuild) ----------------
+# v1 -> v2: event list N17:T37 -> U104; corners players summary -> P18 (under goals summary);
+#           halves -> P25, result -> P29, panel (Матчи/Тотал/МО) -> M24:N30  (mirrors goals rows 1-17)
+#           + fixes AU40/AU41/AU76/AU77 in Corners_Model (no division by zero when Tour_Res/MAX = 0)
+X_MARK2 = "УГЛОВЫЕ v2"
+
+
+def relayout_console(book):
+    c1 = book.worksheet(C1)
+    mark = (c1.acell(X_MARK_CELL).value or "").strip()
+    if mark != X_MARK:
+        print(f"{C1}: marker is '{mark}', expected '{X_MARK}' -> relayout skipped")
+        return
+    # targets inside N17:T37 are freed by moving the event list first -> check only the rest
+    for rng in ("U104:AA124", "AK104:AT112", "M24:M30"):
+        busy = [v for row in c1.get(rng) for v in row if str(v).strip()]
+        if busy:
+            print(f"{C1}: {rng} is not empty -> relayout aborted, nothing changed")
+            return
+    hdr = c1.acell("N17").value or ""
+    if "Event" not in hdr:
+        print(f"{C1}: N17 is '{hdr}', event list not found -> relayout aborted, nothing changed")
+        return
+
+    def g(a, b):
+        m1, m2 = re.fullmatch(r"([A-Z]+)(\d+)", a), re.fullmatch(r"([A-Z]+)(\d+)", b)
+        return {"sheetId": c1.id, "startRowIndex": int(m1.group(2)) - 1, "endRowIndex": int(m2.group(2)),
+                "startColumnIndex": colnum(m1.group(1)) - 1, "endColumnIndex": colnum(m2.group(1))}
+
+    def cut(a, b, dest):
+        m = re.fullmatch(r"([A-Z]+)(\d+)", dest)
+        return {"cutPaste": {"source": g(a, b), "pasteType": "PASTE_NORMAL",
+                             "destination": {"sheetId": c1.id, "rowIndex": int(m.group(2)) - 1,
+                                             "columnIndex": colnum(m.group(1)) - 1}}}
+
+    reqs = [
+        cut("N17", "T37", "U104"),             # goals event list (QUERY keeps working, refs are absolute)
+        cut("U18", "AD22", "AK104"),           # corners players summary -> temp (source/target overlap)
+        cut("U24", "Z26", "AK110"),            # corners halves -> temp
+        cut("AB24", "AC30", "M24"),            # corners panel
+        cut("U28", "X30", "P29"),              # corners result
+        cut("AK104", "AT108", "P18"),          # summary -> final
+        cut("AK110", "AP112", "P25"),          # halves -> final
+        {"updateDimensionProperties": {"range": {"sheetId": c1.id, "dimension": "COLUMNS",
+                                                 "startIndex": colnum("U") - 1, "endIndex": colnum("U")},
+                                       "properties": {"pixelSize": 120}, "fields": "pixelSize"}},
+    ]
+    retry(book.batch_update, {"requests": reqs})
+    print(f"{C1}: relayout done (event list -> U104, corners summary -> P18, halves -> P25, "
+          f"result -> P29, panel -> M24:N30)")
+
+    try:
+        hs = book.worksheet(HS)
+        s = XS
+        fix = [("AU40", f"=IF(AU39>{s['NTOUR']},{s['MAXT']},AU39*{s['MAXT']}/{s['NTOUR']})"),
+               ("AU41", f"=IF(AU39>{s['NTOUR']},{s['TRES']},AU39*{s['TRES']}/{s['NTOUR']})"),
+               ("AU76", f"=IF(AU60>{s['NPT']},{s['MAXPT']},AU60*{s['MAXPT']}/{s['NPT']})"),
+               ("AU77", f"=IF(AU65>{s['NPT']},{s['MAXPT']},AU65*{s['MAXPT']}/{s['NPT']})")]
+        retry(hs.batch_update, [{"range": a, "values": [[f]]} for a, f in fix], value_input_option="USER_ENTERED")
+        print(f"{HS}: AU40/AU41/AU76/AU77 fixed")
+    except gspread.WorksheetNotFound:
+        print(f"{HS} not found -> formula fix skipped")
+    retry(c1.update, [[X_MARK2]], X_MARK_CELL)
 
 
 if X_ID_RAW:
@@ -1349,6 +1417,9 @@ if X_ID_RAW:
     write_ws(WS_NAME, db2, book=xbook)
     if os.environ.get("BUILD_CONSOLE", "0") == "1":
         build_console(xbook)
+        relayout_console(xbook)              # fresh build -> final layout right away
+    elif os.environ.get("RELAYOUT_CONSOLE", "0") == "1":
+        relayout_console(xbook)              # edit the existing block in place, no rebuild
     else:
         print(f"console: data only, {C1} not touched")
 else:
