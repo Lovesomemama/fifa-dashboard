@@ -1604,6 +1604,7 @@ def check_console(book, g, m, j):
     sig_ok = set(sig[g["gid"].isin(matched)])
     sig_m = sig.loc[miss.index]
     by_key = {k: v for k, v in m.groupby("key")}
+    mid2gid = dict(zip(j["match_id"], j["gid"]))
     by_min = {}
     for t, p1_, p2_, tr, sc in zip(m["loc"], m["p1"], m["p2"], m["tour"], m["score"]):
         by_min.setdefault(t, []).append(f"{tr}: {p1_} - {p2_} {sc}")
@@ -1619,10 +1620,23 @@ def check_console(book, g, m, j):
         if cand is not None and len(cand):
             c = cand.loc[(cand["loc"] - r.real).abs().idxmin()]
             near = f'{c["loc"]:%Y-%m-%d %H:%M} {c["tour"]} {c["score"]}'
+        taken = ""
+        if cand is not None and len(cand):
+            for t0 in (r.dt, r.dt + pd.Timedelta(days=1)):
+                hit = cand[(cand["loc"] - t0).abs() <= pd.Timedelta(minutes=1)]
+                for mid in hit["match_id"]:
+                    if mid in mid2gid:
+                        o = g.loc[g["gid"] == mid2gid[mid]].iloc[0]
+                        taken = f'{o["dt"]:%Y-%m-%d %H:%M} {o["tour"]} {o["p1"]} - {o["p2"]} {o["ms1"]}:{o["ms2"]}'
+                        break
+                if taken:
+                    break
         if r.real > pmax:
             why = "паркет ещё не пришёл"
         elif s in sig_ok:
             why = "дубль строки в DATA"
+        elif taken:
+            why = f"матч паркета уже взят строкой DATA {taken}"
         elif cand is None:
             why = "пары нет в паркете (ник?)"
         else:
@@ -1635,7 +1649,11 @@ def check_console(book, g, m, j):
                                       "Матчей в паркете в эту минуту", "Паркет в эту минуту (±1 мин)"])
     print(f"check: last {CHECK_DAYS} days DATA: {len(rec)}, matched: {len(rec) - len(miss)}, missing: {len(miss)}")
     if len(rep):
-        print("check: missing by reason:", rep["Причина"].value_counts().to_dict())
+        print("check: missing by reason:",
+              rep["Причина"].str.replace(r"^матч паркета уже взят.*", "матч паркета уже взят другой строкой DATA",
+                                         regex=True).value_counts().to_dict())
+        for e in rep[rep["Причина"].str.startswith("матч паркета уже взят")].head(5).itertuples():
+            print(f"check: taken: DATA {e[1]} {e[2]} {e[3]} {e[4]} -> {e[5]}")
         real_miss = miss[(rep["Причина"] == "матча нет в паркете").values | (rep["Причина"] == "пары нет в паркете (ник?)").values]
         print("check: real gaps by DATA tournament:", real_miss["tour"].value_counts().to_dict())
         print("check: real gaps by DATA date:", real_miss["dt"].dt.strftime("%d.%m").value_counts().sort_index().to_dict())
@@ -1649,9 +1667,10 @@ def check_console(book, g, m, j):
                 print(f"check: sample {pl}: DATA {e[1]} {e[2]} {e[3]} {e[4]} -> parquet same minute: {e[8] or 'nothing'}")
         print("check: real gaps by player (top 10):",
               pd.concat([real_miss["p1"], real_miss["p2"]]).value_counts().head(10).to_dict())
-        order = {"матча нет в паркете": 0, "пары нет в паркете (ник?)": 1, "дубль строки в DATA": 2,
-                 "паркет ещё не пришёл": 3}
-        rep = rep.sort_values(["Причина", "DATA время"], key=lambda s: s.map(order) if s.name == "Причина" else s)
+        order = {"матча нет в паркете": 0, "пары нет в паркете (ник?)": 1, "дубль строки в DATA": 3,
+                 "паркет ещё не пришёл": 4}
+        rep = rep.sort_values(["Причина", "DATA время"],
+                              key=lambda s: s.map(lambda v: order.get(v, 2)) if s.name == "Причина" else s)
     else:
         rep = pd.DataFrame([["все матчи DATA найдены", "", "", "", "", "", "", ""]], columns=rep.columns)
     write_ws("Corners_Check", rep, book=book)
