@@ -1,0 +1,36 @@
+name: corners-ecf
+on:
+  schedule:
+    - cron: "52 6 * * *"   # ~08:52 Madrid until 25.10, then ~07:52
+    - cron: "52 9 * * *"   # backup run
+  workflow_dispatch:
+    inputs:
+      build_console:
+        description: "Build corners block in Console 1 (only if the area is empty)"
+        type: boolean
+        default: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pandas pyarrow gspread google-api-python-client google-auth
+      - run: python corners_to_sheet_ecf.py
+        env:
+          GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GSHEET_ID_CONSOLE: ${{ secrets.GSHEET_ID_CONSOLE }}
+          DAYS_BACK: "180"
+          BUILD_CONSOLE: ${{ github.event_name == 'workflow_dispatch' && inputs.build_console && '1' || '0' }}
+      - name: keepalive (re-enable schedule, no commits)
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/corners_ecf.yml/enable"
+        env:
+          GH_TOKEN: ${{ github.token }}
