@@ -1454,7 +1454,10 @@ def _num(x):
         return None
 
 
-def match_data(g, m):
+def match_data(g, m, hours=None):
+    """DATA row <-> parquet match. Rank: score confirmed first, then the expected date shift for this hour
+    (night hours -> DATA keeps previous date). Several rounds so a row that lost its best match takes
+    its next-best free one."""
     j = g[["gid", "key", "dt", "p1", "ms1", "ms2"]].merge(
         m[["match_id", "key", "loc", "p1", "score"]].rename(columns={"p1": "mp1"}), on="key")
     dmin = (j["loc"] - j["dt"]).dt.total_seconds() / 60
@@ -1469,58 +1472,66 @@ def match_data(g, m):
     a = [_num(x) for x in j["ms1"]]
     b = [_num(x) for x in j["ms2"]]
     j["score_ok"] = [(x is not None and y is not None and u == x and v == y) for x, y, u, v in zip(a, b, pa, pb)]
-    j["rank"] = (~j["score_ok"]).astype(int) * 10 + j["shift"].astype(int)
-    j = j.sort_values(["gid", "rank"]).drop_duplicates("gid")            # best parquet match per DATA row
-    j = j.sort_values(["match_id", "rank"]).drop_duplicates("match_id")  # each parquet match used once
-    return j
+    exp = j["dt"].dt.hour.isin(hours or set()).astype(int)
+    j["rank"] = (~j["score_ok"]).astype(int) * 10 + (j["shift"] != exp).astype(int)
+    j = j.sort_values(["rank", "gid"])
+    done = []
+    for _ in range(5):
+        if j.empty:
+            break
+        x = j.drop_duplicates("gid").drop_duplicates("match_id")    # best per DATA row, each parquet match once
+        done.append(x)
+        j = j[~j["gid"].isin(set(x["gid"])) & ~j["match_id"].isin(set(x["match_id"]))]
+    return pd.concat(done) if done else j
 
 
 def find_aliases(g, m, j):
-    """Player renamed in parquet vs DATA (e.g. old nick): unmatched DATA rows whose time + score match a parquet
-    match where exactly ONE player name coincides. Accepted if confirmed >= 3 times and the parquet name is
-    not a DATA player itself."""
+    """Renamed players: an unmatched DATA row whose time (same date or +1 day, +-1 min) hits a parquet match
+    with exactly ONE common player and the same oriented score votes for (parquet name -> DATA name).
+    Accepted with >= 3 votes and only if the parquet name is not itself a DATA player."""
     um = g[~g["gid"].isin(set(j["gid"]))]
     data_players = {x.lower() for x in pd.concat([g["p1"], g["p2"]]) if x}
     by_t = {}
-    for r in m.itertuples():
+    for r in m[["loc", "p1", "p2", "score"]].itertuples(index=False):
         by_t.setdefault(r.loc, []).append(r)
     votes = {}
     for r in um.itertuples():
-        dn = {r.p1.lower(): 0, r.p2.lower(): 1}
         a, b = _num(r.ms1), _num(r.ms2)
-        for base in (r.dt, r.dt + pd.Timedelta(days=1)):
+        if a is None or b is None:
+            continue
+        d1, d2 = r.p1.lower(), r.p2.lower()
+        for t0 in (r.dt, r.dt + pd.Timedelta(days=1)):
             for dm in (-1, 0, 1):
-                for c in by_t.get(base + pd.Timedelta(minutes=dm), []):
-                    mn = [str(c.p1).lower(), str(c.p2).lower()]
-                    common = [x for x in mn if x in dn]
-                    if len(common) != 1:
-                        continue
-                    sc = re.match(r"\s*(\d+)\s*:\s*(\d+)", str(c.score))
-                    if not sc or a is None or b is None:
+                for c in by_t.get(t0 + pd.Timedelta(minutes=dm), []):
+                    sc = re.search(r"(\d+)\s*:\s*(\d+)", str(c.score))
+                    if not sc:
                         continue
                     s1, s2 = int(sc.group(1)), int(sc.group(2))
-                    pos_m = mn.index(common[0])                 # 0 = parquet home
-                    pos_d = dn[common[0]]                       # 0 = DATA Player_1
-                    ok = (s1, s2) == (a, b) if pos_m == pos_d else (s2, s1) == (a, b)
-                    if not ok:
-                        continue
-                    old = mn[1 - pos_m]
-                    new = [x for x in (r.p1, r.p2) if x.lower() != common[0]][0]
-                    votes[(old, new)] = votes.get((old, new), 0) + 1
-    aliases = {}
-    for (old, new), n in sorted(votes.items(), key=lambda x: -x[1]):
-        if n >= 3 and old not in data_players and old not in aliases:
-            aliases[old] = new
-    print("player aliases parquet -> DATA:", {k: (v, votes[(k, v)]) for k, v in aliases.items()} or "none")
-    return aliases
+                    q1, q2 = str(c.p1).lower(), str(c.p2).lower()
+                    pairs = []
+                    if q1 == d1 and q2 != d2 and (s1, s2) == (a, b):
+                        pairs.append((q2, r.p2))
+                    if q2 == d2 and q1 != d1 and (s1, s2) == (a, b):
+                        pairs.append((q1, r.p1))
+                    if q1 == d2 and q2 != d1 and (s1, s2) == (b, a):
+                        pairs.append((q2, r.p1))
+                    if q2 == d1 and q1 != d2 and (s1, s2) == (b, a):
+                        pairs.append((q1, r.p2))
+                    for old, new in pairs:
+                        votes[(old, new)] = votes.get((old, new), 0) + 1
+    best = {}
+    for (old, new), n in votes.items():
+        if n >= 3 and old not in data_players and n > best.get(old, ("", 0))[1]:
+            best[old] = (new, n)
+    print("player aliases parquet -> DATA:", best or "none")
+    return {k: v[0] for k, v in best.items()}
 
 
 def apply_aliases(aliases):
-    if not aliases:
-        return
     for col in ("p1", "p2"):
         low = meta[col].astype(str).str.lower()
-        meta.loc[low.isin(aliases), col] = low[low.isin(aliases)].map(aliases)
+        hit = low.isin(aliases)
+        meta.loc[hit, col] = low[hit].map(aliases)
 
 
 def session_hours(j):
@@ -1559,6 +1570,7 @@ def build_console_db(g, m):
         m = parquet_matches()
         j = match_data(g, m)
     hours = session_hours(j)
+    j = match_data(g, m, hours)              # 2nd pass: prefer the usual date shift for each hour
     build_console_db.hours = hours
     # matched -> DATA date/time + DATA tournament (includes parquet matches without a 2nd-half event)
     mt = corner_rows(j["match_id"]).merge(
