@@ -1402,6 +1402,72 @@ def relayout_console(book):
     retry(c1.update, [[X_MARK2]], X_MARK_CELL)
 
 
+# ---------------- diagnostics: DATA (goals) vs parquet corners ----------------
+CHECK_DAYS = 30
+
+
+def check_console(book, data_ws):
+    """Sheet 'Corners_Check': every DATA match of the last CHECK_DAYS days without a corners match,
+    with the reason. Also prints the typical time offset DATA vs UTC -> tells which timezone DATA uses."""
+    vals = data_ws.get_values("A2:G", value_render_option="UNFORMATTED_VALUE",
+                              date_time_render_option="SERIAL_NUMBER")
+    rows = []
+    for v in vals:
+        v = (list(v) + [""] * 7)[:7]
+        try:
+            d = float(v[0]) + (float(v[2]) if str(v[2]).strip() else 0.0)
+        except (TypeError, ValueError):
+            continue
+        rows.append((d, str(v[1]).strip(), str(v[5]).strip(), str(v[6]).strip()))
+    g = pd.DataFrame(rows, columns=["serial", "tour", "p1", "p2"])
+    g["dt"] = pd.to_datetime("1899-12-30") + pd.to_timedelta(g["serial"], unit="D")
+    g["dt"] = g["dt"].dt.round("min")
+    g = g[g["dt"] >= g["dt"].max() - pd.Timedelta(days=CHECK_DAYS)]
+    g["key"] = ["|".join(sorted([a.lower(), b.lower()])) for a, b in zip(g.p1, g.p2)]
+
+    m = meta.copy()                                     # ALL parquet matches, incl. dropped ones
+    m["utc"] = pd.to_datetime(m["match_date"], errors="coerce", format="ISO8601", utc=True).dt.tz_localize(None)
+    m["key"] = ["|".join(sorted([str(a).lower(), str(b).lower()])) for a, b in zip(m.p1, m.p2)]
+    m["tour"] = m["league"].str.replace(r"^ESB\s+", "", regex=True).str.strip()
+    m["in_db"] = m["match_id"].isin(set(out["match_id"]))
+    m = m[m["key"].isin(set(g["key"]))]
+
+    # offset DATA - UTC from nearest same-pair matches
+    j = g.merge(m[["key", "utc"]], on="key")
+    j["off"] = (j["dt"] - j["utc"]).dt.total_seconds() / 3600
+    j = j[j["off"].abs() <= 6]
+    off = round(float(j["off"].round().mode().iloc[0])) if len(j) else 0
+    print(f"check: DATA time = UTC{off:+d}  (corners in this file are written as {X_TZ})")
+
+    out_rows, ok = [], 0
+    for r in g.itertuples():
+        cand = m[m["key"] == r.key]
+        target = r.dt - pd.Timedelta(hours=off)
+        diff = (cand["utc"] - target).abs()
+        exact = cand[diff <= pd.Timedelta(minutes=5)]
+        if len(exact):
+            c = exact.iloc[0]
+            if c["in_db"] and c["tour"].lower() == r.tour.lower():
+                ok += 1
+                continue
+            if not c["in_db"]:
+                reason = "в паркете есть, но выкинут: не дошёл до 2-го тайма / Volta"
+            else:
+                reason = f"в паркете другой турнир: {c['tour']}"
+        else:
+            reason = "матча нет в паркете"
+            c = cand.loc[diff.idxmin()] if len(cand) else None
+        near = (c["utc"] + pd.Timedelta(hours=off)).strftime("%Y-%m-%d %H:%M") if c is not None else ""
+        out_rows.append([r.dt.strftime("%Y-%m-%d %H:%M"), r.tour, f"{r.p1} - {r.p2}", reason,
+                         near, c["tour"] if c is not None else ""])
+    print(f"check: last {CHECK_DAYS} days DATA matches: {len(g)}, with corners: {ok}, without: {len(out_rows)}")
+    rep = pd.DataFrame(out_rows, columns=["DATA время", "DATA турнир", "Пара", "Причина",
+                                          "Ближайший в паркете", "Турнир в паркете"])
+    if rep.empty:
+        rep = pd.DataFrame([["все матчи DATA найдены", "", "", "", "", ""]], columns=rep.columns)
+    write_ws("Corners_Check", rep, book=book)
+
+
 if X_ID_RAW:
     X_ID = re.search(r"[-\w]{25,}", X_ID_RAW).group(0)
     xbook = gc.open_by_key(X_ID)
@@ -1415,6 +1481,8 @@ if X_ID_RAW:
     db2["event_dt"] = dt.loc[db2.index].dt.tz_convert(X_TZ).dt.strftime("%Y-%m-%d %H:%M:%S")
     print("console corners by tournament:", db2["tournament"].value_counts().to_dict())
     write_ws(WS_NAME, db2, book=xbook)
+    if os.environ.get("CHECK_CONSOLE", "0") == "1":
+        check_console(xbook, data)
     if os.environ.get("BUILD_CONSOLE", "0") == "1":
         build_console(xbook)
         relayout_console(xbook)              # fresh build -> final layout right away
