@@ -1411,24 +1411,28 @@ def relayout_console(book):
 # SESSION date for night matches) and, if ambiguous, by final score. Matched corners get DATA's date/time
 # and tournament -> the corners block shows exactly the goals matches. Parquet matches newer than DATA
 # ("fresh") are added on top with the night-hour rule learned from the matched ones.
-CHECK_DAYS = 30
+CHECK_DAYS = int(os.environ.get("CHECK_DAYS") or 30)
 
 
 def load_data_matches(data_ws):
-    vals = data_ws.get_values("A2:J", value_render_option="UNFORMATTED_VALUE",
+    vals = data_ws.get_values("A2:N", value_render_option="UNFORMATTED_VALUE",
                               date_time_render_option="SERIAL_NUMBER")
     rows = []
     for v in vals:
-        v = (list(v) + [""] * 10)[:10]
+        v = (list(v) + [""] * 14)[:14]
         try:
             d = float(v[0]) + (float(v[2]) if str(v[2]).strip() else 0.0)
         except (TypeError, ValueError):
             continue
         rows.append((d, str(v[1]).strip(), str(v[5]).strip(), str(v[6]).strip(),
-                     str(v[7]).strip(), str(v[9]).strip()))
-    g = pd.DataFrame(rows, columns=["serial", "tour", "p1", "p2", "ms1", "ms2"])
+                     str(v[7]).strip(), str(v[9]).strip(), str(v[13]).strip()))
+    g = pd.DataFrame(rows, columns=["serial", "tour", "p1", "p2", "ms1", "ms2", "type"])
     g["dt"] = (pd.to_datetime("1899-12-30") + pd.to_timedelta(g["serial"], unit="D")).dt.round("min")
     g["key"] = ["|".join(sorted([a.lower(), b.lower()])) for a, b in zip(g.p1, g.p2)]
+    print("console DATA by Type:", g["type"].replace("", "(empty)").value_counts().to_dict())
+    test = g["type"].str.lower().eq("test")
+    print(f"console DATA: {int(test.sum())} Test matches skipped (not in parquet)")
+    g = g[~test].reset_index(drop=True)
     g["gid"] = range(len(g))
     return g
 
@@ -1600,6 +1604,14 @@ def check_console(book, g, m, j):
     sig_ok = set(sig[g["gid"].isin(matched)])
     sig_m = sig.loc[miss.index]
     by_key = {k: v for k, v in m.groupby("key")}
+    by_min = {}
+    for t, p1_, p2_, tr, sc in zip(m["loc"], m["p1"], m["p2"], m["tour"], m["score"]):
+        by_min.setdefault(t, []).append(f"{tr}: {p1_} - {p2_} {sc}")
+    def same_time(t):
+        out_ = []
+        for d in (-1, 0, 1):
+            out_ += by_min.get(t + pd.Timedelta(minutes=d), [])
+        return out_
     rows = []
     for r, s in zip(miss.itertuples(), sig_m):
         cand = by_key.get(r.key)
@@ -1615,22 +1627,33 @@ def check_console(book, g, m, j):
             why = "пары нет в паркете (ник?)"
         else:
             why = "матча нет в паркете"
-        rows.append([r.dt.strftime("%Y-%m-%d %H:%M"), r.tour, f"{r.p1} - {r.p2}", f"{r.ms1}:{r.ms2}", why, near])
+        st = same_time(r.real) if why != "паркет ещё не пришёл" else []
+        rows.append([r.dt.strftime("%Y-%m-%d %H:%M"), r.tour, f"{r.p1} - {r.p2}", f"{r.ms1}:{r.ms2}", why, near,
+                     len(st), " | ".join(st[:6])])
     rep = pd.DataFrame(rows, columns=["DATA время", "DATA турнир", "Пара", "Счёт DATA", "Причина",
-                                      "Ближайший матч пары в паркете (реальное время)"])
+                                      "Ближайший матч пары в паркете (реальное время)",
+                                      "Матчей в паркете в эту минуту", "Паркет в эту минуту (±1 мин)"])
     print(f"check: last {CHECK_DAYS} days DATA: {len(rec)}, matched: {len(rec) - len(miss)}, missing: {len(miss)}")
     if len(rep):
         print("check: missing by reason:", rep["Причина"].value_counts().to_dict())
         real_miss = miss[(rep["Причина"] == "матча нет в паркете").values | (rep["Причина"] == "пары нет в паркете (ник?)").values]
+        print("check: real gaps by DATA tournament:", real_miss["tour"].value_counts().to_dict())
         print("check: real gaps by DATA date:", real_miss["dt"].dt.strftime("%d.%m").value_counts().sort_index().to_dict())
         print("check: real gaps by hour:", real_miss["dt"].dt.hour.value_counts().sort_index().to_dict())
+        gap = rep["Причина"].isin(["матча нет в паркете", "пары нет в паркете (ник?)"])
+        print(f"check: real gaps with other parquet matches in the same minute: "
+              f"{int((rep.loc[gap, 'Матчей в паркете в эту минуту'] > 0).sum())} of {int(gap.sum())}")
+        for pl in pd.concat([real_miss["p1"], real_miss["p2"]]).value_counts().head(3).index:
+            ex = rep[gap & rep["Пара"].str.contains(pl, regex=False)].head(3)
+            for e in ex.itertuples():
+                print(f"check: sample {pl}: DATA {e[1]} {e[2]} {e[3]} {e[4]} -> parquet same minute: {e[8] or 'nothing'}")
         print("check: real gaps by player (top 10):",
               pd.concat([real_miss["p1"], real_miss["p2"]]).value_counts().head(10).to_dict())
         order = {"матча нет в паркете": 0, "пары нет в паркете (ник?)": 1, "дубль строки в DATA": 2,
                  "паркет ещё не пришёл": 3}
         rep = rep.sort_values(["Причина", "DATA время"], key=lambda s: s.map(order) if s.name == "Причина" else s)
     else:
-        rep = pd.DataFrame([["все матчи DATA найдены", "", "", "", "", ""]], columns=rep.columns)
+        rep = pd.DataFrame([["все матчи DATA найдены", "", "", "", "", "", "", ""]], columns=rep.columns)
     write_ws("Corners_Check", rep, book=book)
 
 
