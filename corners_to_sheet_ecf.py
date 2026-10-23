@@ -1402,13 +1402,14 @@ def relayout_console(book):
     retry(c1.update, [[X_MARK2]], X_MARK_CELL)
 
 
-# ---------------- diagnostics: DATA (goals) vs parquet corners ----------------
+# ---------------- DATA (goals) vs parquet: session dates + diagnostics ----------------
+# DATA keeps the SESSION date for night matches (e.g. 23.10 06:50 is stored as 22.10 06:50).
+# We detect from the data which clock hours are stored with the previous date and write corners the same
+# way, so windows, day weights and H2H lists match the goals block 1:1.
 CHECK_DAYS = 30
 
 
-def check_console(book, data_ws):
-    """Sheet 'Corners_Check': every DATA match of the last CHECK_DAYS days without a corners match,
-    with the reason. Also prints the typical time offset DATA vs UTC -> tells which timezone DATA uses."""
+def load_data_matches(data_ws):
     vals = data_ws.get_values("A2:G", value_render_option="UNFORMATTED_VALUE",
                               date_time_render_option="SERIAL_NUMBER")
     rows = []
@@ -1420,47 +1421,78 @@ def check_console(book, data_ws):
             continue
         rows.append((d, str(v[1]).strip(), str(v[5]).strip(), str(v[6]).strip()))
     g = pd.DataFrame(rows, columns=["serial", "tour", "p1", "p2"])
-    g["dt"] = pd.to_datetime("1899-12-30") + pd.to_timedelta(g["serial"], unit="D")
-    g["dt"] = g["dt"].dt.round("min")
-    g = g[g["dt"] >= g["dt"].max() - pd.Timedelta(days=CHECK_DAYS)]
+    g["dt"] = (pd.to_datetime("1899-12-30") + pd.to_timedelta(g["serial"], unit="D")).dt.round("min")
     g["key"] = ["|".join(sorted([a.lower(), b.lower()])) for a, b in zip(g.p1, g.p2)]
+    return g
 
+
+def parquet_matches():
     m = meta.copy()                                     # ALL parquet matches, incl. dropped ones
-    m["utc"] = pd.to_datetime(m["match_date"], errors="coerce", format="ISO8601", utc=True).dt.tz_localize(None)
+    utc = pd.to_datetime(m["match_date"], errors="coerce", format="ISO8601", utc=True)
+    m["loc"] = utc.dt.tz_convert(X_TZ).dt.tz_localize(None).dt.round("min")
     m["key"] = ["|".join(sorted([str(a).lower(), str(b).lower()])) for a, b in zip(m.p1, m.p2)]
     m["tour"] = m["league"].str.replace(r"^ESB\s+", "", regex=True).str.strip()
     m["in_db"] = m["match_id"].isin(set(out["match_id"]))
+    return m
+
+
+def detect_session_hours(g, m):
+    recent = g[g["dt"] >= g["dt"].max() - pd.Timedelta(days=CHECK_DAYS)]
+    idx = set(zip(m["key"], m["loc"]))
+    same, prev = [0] * 24, [0] * 24
+
+    def hit(k, t):
+        return any((k, t + pd.Timedelta(minutes=d)) in idx for d in (-1, 0, 1))
+    for r in recent.itertuples():
+        if hit(r.key, r.dt):
+            same[r.dt.hour] += 1
+        elif hit(r.key, r.dt + pd.Timedelta(days=1)):
+            prev[r.dt.hour] += 1
+    hours = {h for h in range(24) if prev[h] > same[h] and prev[h] >= 3}
+    print("session check by hour (same date / stored as previous date):",
+          {h: (same[h], prev[h]) for h in range(24) if same[h] or prev[h]})
+    print("DATA stores previous date for hours:", sorted(hours) or "none")
+    return hours
+
+
+def to_session(ts, hours):
+    return ts - pd.to_timedelta(ts.dt.hour.isin(hours).astype(int), unit="D")
+
+
+def check_console(book, g, m, hours):
+    """Sheet 'Corners_Check': DATA matches of the last CHECK_DAYS days (up to the last parquet match)
+    that have no corners, with the reason."""
+    m = m.copy()
+    m["sess"] = to_session(m["loc"], hours)
+    last = m["sess"].max()
+    g = g[(g["dt"] >= g["dt"].max() - pd.Timedelta(days=CHECK_DAYS)) & (g["dt"] <= last)]
     m = m[m["key"].isin(set(g["key"]))]
-
-    # offset DATA - UTC from nearest same-pair matches
-    j = g.merge(m[["key", "utc"]], on="key")
-    j["off"] = (j["dt"] - j["utc"]).dt.total_seconds() / 3600
-    j = j[j["off"].abs() <= 6]
-    off = round(float(j["off"].round().mode().iloc[0])) if len(j) else 0
-    print(f"check: DATA time = UTC{off:+d}  (corners in this file are written as {X_TZ})")
-
-    out_rows, ok = [], 0
+    by_key = {k: v for k, v in m.groupby("key")}
+    empty = m.iloc[0:0]
+    out_rows, ok, cnt = [], 0, {}
     for r in g.itertuples():
-        cand = m[m["key"] == r.key]
-        target = r.dt - pd.Timedelta(hours=off)
-        diff = (cand["utc"] - target).abs()
+        cand = by_key.get(r.key, empty)
+        diff = (cand["sess"] - r.dt).abs()
         exact = cand[diff <= pd.Timedelta(minutes=5)]
+        c = None
         if len(exact):
             c = exact.iloc[0]
             if c["in_db"] and c["tour"].lower() == r.tour.lower():
                 ok += 1
                 continue
-            if not c["in_db"]:
-                reason = "в паркете есть, но выкинут: не дошёл до 2-го тайма / Volta"
-            else:
-                reason = f"в паркете другой турнир: {c['tour']}"
+            reason = ("в паркете есть, но выкинут: не дошёл до 2-го тайма" if not c["in_db"]
+                      else f"в паркете другой турнир: {c['tour']}")
         else:
             reason = "матча нет в паркете"
-            c = cand.loc[diff.idxmin()] if len(cand) else None
-        near = (c["utc"] + pd.Timedelta(hours=off)).strftime("%Y-%m-%d %H:%M") if c is not None else ""
+            if len(cand):
+                c = cand.loc[diff.idxmin()]
+        cnt[reason] = cnt.get(reason, 0) + 1
         out_rows.append([r.dt.strftime("%Y-%m-%d %H:%M"), r.tour, f"{r.p1} - {r.p2}", reason,
-                         near, c["tour"] if c is not None else ""])
-    print(f"check: last {CHECK_DAYS} days DATA matches: {len(g)}, with corners: {ok}, without: {len(out_rows)}")
+                         c["sess"].strftime("%Y-%m-%d %H:%M") if c is not None else "",
+                         c["tour"] if c is not None else ""])
+    print(f"check: DATA matches {g['dt'].min():%d.%m}-{last:%d.%m %H:%M}: {len(g)}, "
+          f"with corners: {ok}, without: {len(out_rows)}")
+    print("check reasons:", cnt or "none")
     rep = pd.DataFrame(out_rows, columns=["DATA время", "DATA турнир", "Пара", "Причина",
                                           "Ближайший в паркете", "Турнир в паркете"])
     if rep.empty:
@@ -1472,17 +1504,21 @@ if X_ID_RAW:
     X_ID = re.search(r"[-\w]{25,}", X_ID_RAW).group(0)
     xbook = gc.open_by_key(X_ID)
     data = xbook.worksheet("DATA")
-    tours = {str(v).strip().lower() for v in data.col_values(2)[1:] if str(v).strip()}
-    plist = {str(v).strip().lower() for v in data.col_values(6)[1:] + data.col_values(7)[1:] if str(v).strip()}
-    print(f"console DATA: {len(tours)} tournaments, {len(plist)} players")
+    gdata = load_data_matches(data)
+    tours = {t.lower() for t in gdata["tour"] if t}
+    plist = {x.lower() for x in pd.concat([gdata["p1"], gdata["p2"]]) if x}
+    print(f"console DATA: {len(gdata)} matches, {len(tours)} tournaments, {len(plist)} players")
+    pm = parquet_matches()
+    sess_hours = detect_session_hours(gdata, pm)
     keep = (out["tournament"].str.lower().isin(tours) & out["p1"].str.lower().isin(plist)
             & out["p2"].str.lower().isin(plist))
     db2 = out[keep].copy()
-    db2["event_dt"] = dt.loc[db2.index].dt.tz_convert(X_TZ).dt.strftime("%Y-%m-%d %H:%M:%S")
+    loc = dt.loc[db2.index].dt.tz_convert(X_TZ).dt.tz_localize(None)
+    db2["event_dt"] = to_session(loc, sess_hours).dt.strftime("%Y-%m-%d %H:%M:%S")
     print("console corners by tournament:", db2["tournament"].value_counts().to_dict())
     write_ws(WS_NAME, db2, book=xbook)
     if os.environ.get("CHECK_CONSOLE", "0") == "1":
-        check_console(xbook, data)
+        check_console(xbook, gdata, pm, sess_hours)
     if os.environ.get("BUILD_CONSOLE", "0") == "1":
         build_console(xbook)
         relayout_console(xbook)              # fresh build -> final layout right away
