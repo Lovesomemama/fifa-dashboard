@@ -13,6 +13,10 @@ on:
         description: "Re-arrange the existing corners block (no rebuild)"
         type: boolean
         default: false
+      check_console:
+        description: "Write Corners_Check: DATA matches without corners + reason"
+        type: boolean
+        default: false
 
 permissions:
   actions: write
@@ -35,6 +39,7 @@ jobs:
           DAYS_BACK: "180"
           BUILD_CONSOLE: ${{ github.event_name == 'workflow_dispatch' && inputs.build_console && '1' || '0' }}
           RELAYOUT_CONSOLE: ${{ github.event_name == 'workflow_dispatch' && inputs.relayout_console && '1' || '0' }}
+          CHECK_CONSOLE: ${{ github.event_name == 'workflow_dispatch' && inputs.check_console && '1' || '0' }}
       - name: keepalive (re-enable schedule, no commits)
         run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/corners_ecf.yml/enable"
         env:
