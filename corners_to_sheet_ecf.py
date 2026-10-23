@@ -1471,6 +1471,54 @@ def match_data(g, m):
     return j
 
 
+def find_aliases(g, m, j):
+    """Player renamed in parquet vs DATA (e.g. old nick): unmatched DATA rows whose time + score match a parquet
+    match where exactly ONE player name coincides. Accepted if confirmed >= 3 times and the parquet name is
+    not a DATA player itself."""
+    um = g[~g["gid"].isin(set(j["gid"]))]
+    data_players = {x.lower() for x in pd.concat([g["p1"], g["p2"]]) if x}
+    by_t = {}
+    for r in m.itertuples():
+        by_t.setdefault(r.loc, []).append(r)
+    votes = {}
+    for r in um.itertuples():
+        dn = {r.p1.lower(): 0, r.p2.lower(): 1}
+        a, b = _num(r.ms1), _num(r.ms2)
+        for base in (r.dt, r.dt + pd.Timedelta(days=1)):
+            for dm in (-1, 0, 1):
+                for c in by_t.get(base + pd.Timedelta(minutes=dm), []):
+                    mn = [str(c.p1).lower(), str(c.p2).lower()]
+                    common = [x for x in mn if x in dn]
+                    if len(common) != 1:
+                        continue
+                    sc = re.match(r"\s*(\d+)\s*:\s*(\d+)", str(c.score))
+                    if not sc or a is None or b is None:
+                        continue
+                    s1, s2 = int(sc.group(1)), int(sc.group(2))
+                    pos_m = mn.index(common[0])                 # 0 = parquet home
+                    pos_d = dn[common[0]]                       # 0 = DATA Player_1
+                    ok = (s1, s2) == (a, b) if pos_m == pos_d else (s2, s1) == (a, b)
+                    if not ok:
+                        continue
+                    old = mn[1 - pos_m]
+                    new = [x for x in (r.p1, r.p2) if x.lower() != common[0]][0]
+                    votes[(old, new)] = votes.get((old, new), 0) + 1
+    aliases = {}
+    for (old, new), n in sorted(votes.items(), key=lambda x: -x[1]):
+        if n >= 3 and old not in data_players and old not in aliases:
+            aliases[old] = new
+    print("player aliases parquet -> DATA:", {k: (v, votes[(k, v)]) for k, v in aliases.items()} or "none")
+    return aliases
+
+
+def apply_aliases(aliases):
+    if not aliases:
+        return
+    for col in ("p1", "p2"):
+        low = meta[col].astype(str).str.lower()
+        meta.loc[low.isin(aliases), col] = low[low.isin(aliases)].map(aliases)
+
+
 def session_hours(j):
     hrs = j["dt"].dt.hour
     tab = pd.crosstab(hrs, j["shift"])
@@ -1501,7 +1549,13 @@ def corner_rows(ids):
 
 def build_console_db(g, m):
     j = match_data(g, m)
+    al = find_aliases(g, m, j)
+    if al:
+        apply_aliases(al)
+        m = parquet_matches()
+        j = match_data(g, m)
     hours = session_hours(j)
+    build_console_db.hours = hours
     # matched -> DATA date/time + DATA tournament (includes parquet matches without a 2nd-half event)
     mt = corner_rows(j["match_id"]).merge(
         j[["match_id", "gid"]].merge(g[["gid", "dt", "tour"]], on="gid"), on="match_id")
@@ -1518,31 +1572,64 @@ def build_console_db(g, m):
     fr["event_dt"] = to_session(fr["loc"], hours).dt.strftime("%Y-%m-%d %H:%M:%S")
     colsx = list(out.columns)
     db = pd.concat([mt[colsx], fr[colsx]], ignore_index=True).sort_values("event_dt", ascending=False)
-    rng = g[(g["dt"] >= to_session(m["loc"], hours).min()) & (g["dt"] <= to_session(m["loc"], hours).max())]
+    real = data_real_time(g, hours)
+    rng = g[(g["dt"] >= to_session(m["loc"], hours).min()) & (real <= m["loc"].max())]
+    print(f"console: parquet last match {m['loc'].max():%Y-%m-%d %H:%M}, DATA last {last:%Y-%m-%d %H:%M}")
     print(f"console: DATA matches in parquet period: {len(rng)}, matched: {len(mt)} "
           f"(score confirmed: {int(j['score_ok'].sum())}, night date shifted: {int((j['shift'] == 1).sum())}), "
-          f"not in parquet: {len(rng) - int(rng['gid'].isin(set(j['gid'])).sum())}, fresh after DATA: {len(fr)}")
-    return db, j
+          f"not in parquet: {len(rng) - int(rng['gid'].isin(set(j['gid'])).sum())}, "
+          f"DATA newer than parquet: {int((real > m['loc'].max()).sum())}, fresh after DATA: {len(fr)}")
+    return db, j, m
+
+
+def data_real_time(g, hours):
+    """DATA session date -> real date (night hours belong to the next calendar day)."""
+    return g["dt"] + pd.to_timedelta(g["dt"].dt.hour.isin(hours).astype(int), unit="D")
 
 
 def check_console(book, g, m, j):
-    """Sheet 'Corners_Check': DATA matches of the last CHECK_DAYS days without a parquet match."""
+    """Sheet 'Corners_Check': DATA matches of the last CHECK_DAYS days without a parquet match + reason."""
+    hours = getattr(build_console_db, "hours", set())
+    g = g.assign(real=data_real_time(g, hours))
+    pmax = m["loc"].max()
+    matched = set(j["gid"])
     rec = g[g["dt"] >= g["dt"].max() - pd.Timedelta(days=CHECK_DAYS)]
-    miss = rec[~rec["gid"].isin(set(j["gid"]))]
+    miss = rec[~rec["gid"].isin(matched)]
+    # exact duplicates in DATA (same pair, time, score) -> one parquet match can serve only one row
+    sig = g["key"] + "|" + g["dt"].astype(str) + "|" + g["ms1"].astype(str) + ":" + g["ms2"].astype(str)
+    sig_ok = set(sig[g["gid"].isin(matched)])
+    sig_m = sig.loc[miss.index]
     by_key = {k: v for k, v in m.groupby("key")}
     rows = []
-    for r in miss.itertuples():
+    for r, s in zip(miss.itertuples(), sig_m):
         cand = by_key.get(r.key)
         near = ""
         if cand is not None and len(cand):
-            c = cand.loc[(cand["loc"] - r.dt).abs().idxmin()]
+            c = cand.loc[(cand["loc"] - r.real).abs().idxmin()]
             near = f'{c["loc"]:%Y-%m-%d %H:%M} {c["tour"]} {c["score"]}'
-        rows.append([r.dt.strftime("%Y-%m-%d %H:%M"), r.tour, f"{r.p1} - {r.p2}", f"{r.ms1}:{r.ms2}",
-                     "матча нет в паркете", near])
-    print(f"check: last {CHECK_DAYS} days DATA: {len(rec)}, matched: {len(rec) - len(miss)}, missing: {len(miss)}")
+        if r.real > pmax:
+            why = "паркет ещё не пришёл"
+        elif s in sig_ok:
+            why = "дубль строки в DATA"
+        elif cand is None:
+            why = "пары нет в паркете (ник?)"
+        else:
+            why = "матча нет в паркете"
+        rows.append([r.dt.strftime("%Y-%m-%d %H:%M"), r.tour, f"{r.p1} - {r.p2}", f"{r.ms1}:{r.ms2}", why, near])
     rep = pd.DataFrame(rows, columns=["DATA время", "DATA турнир", "Пара", "Счёт DATA", "Причина",
                                       "Ближайший матч пары в паркете (реальное время)"])
-    if rep.empty:
+    print(f"check: last {CHECK_DAYS} days DATA: {len(rec)}, matched: {len(rec) - len(miss)}, missing: {len(miss)}")
+    if len(rep):
+        print("check: missing by reason:", rep["Причина"].value_counts().to_dict())
+        real_miss = miss[(rep["Причина"] == "матча нет в паркете").values | (rep["Причина"] == "пары нет в паркете (ник?)").values]
+        print("check: real gaps by DATA date:", real_miss["dt"].dt.strftime("%d.%m").value_counts().sort_index().to_dict())
+        print("check: real gaps by hour:", real_miss["dt"].dt.hour.value_counts().sort_index().to_dict())
+        print("check: real gaps by player (top 10):",
+              pd.concat([real_miss["p1"], real_miss["p2"]]).value_counts().head(10).to_dict())
+        order = {"матча нет в паркете": 0, "пары нет в паркете (ник?)": 1, "дубль строки в DATA": 2,
+                 "паркет ещё не пришёл": 3}
+        rep = rep.sort_values(["Причина", "DATA время"], key=lambda s: s.map(order) if s.name == "Причина" else s)
+    else:
         rep = pd.DataFrame([["все матчи DATA найдены", "", "", "", "", ""]], columns=rep.columns)
     write_ws("Corners_Check", rep, book=book)
 
@@ -1553,7 +1640,7 @@ if X_ID_RAW:
     gdata = load_data_matches(xbook.worksheet("DATA"))
     print(f"console DATA: {len(gdata)} matches")
     pm = parquet_matches()
-    db2, jm = build_console_db(gdata, pm)
+    db2, jm, pm = build_console_db(gdata, pm)
     print("console corners by tournament:", db2["tournament"].value_counts().to_dict())
     write_ws(WS_NAME, db2, book=xbook)
     if os.environ.get("CHECK_CONSOLE", "0") == "1":
