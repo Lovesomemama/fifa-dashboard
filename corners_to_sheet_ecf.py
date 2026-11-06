@@ -1428,17 +1428,50 @@ CHECK_DAYS = int(os.environ.get("CHECK_DAYS") or 30)
 def load_data_matches(data_ws):
     vals = data_ws.get_values("A2:N", value_render_option="UNFORMATTED_VALUE",
                               date_time_render_option="SERIAL_NUMBER")
-    rows = []
-    for v in vals:
-        v = (list(v) + [""] * 14)[:14]
+    def _date(x):
         try:
-            d = float(v[0]) + (float(v[2]) if str(v[2]).strip() else 0.0)
+            return float(x)
         except (TypeError, ValueError):
+            s = str(x).strip()
+            for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y", "%d.%m.%y"):
+                try:
+                    return float((datetime.strptime(s, fmt) - datetime(1899, 12, 30)).days)
+                except ValueError:
+                    pass
+        return None
+
+    def _time(x):
+        s = str(x).strip()
+        if not s:
+            return 0.0
+        try:
+            return float(s) % 1
+        except ValueError:
+            mt = re.fullmatch(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", s)
+            return (int(mt.group(1)) * 3600 + int(mt.group(2)) * 60 + int(mt.group(3) or 0)) / 86400 if mt else None
+
+    rows, bad, textdate = [], [], 0
+    for i, v in enumerate(vals, start=2):
+        v = (list(v) + [""] * 14)[:14]
+        if not any(str(c).strip() for c in v):
             continue
+        d0, t0 = _date(v[0]), _time(v[2])
+        if d0 is None or t0 is None:
+            bad.append((i, v[0], v[2]))
+            continue
+        if not isinstance(v[0], (int, float)):
+            textdate += 1
+        d = d0 + t0
         rows.append((d, str(v[1]).strip(), str(v[5]).strip(), str(v[6]).strip(),
                      str(v[7]).strip(), str(v[9]).strip(), str(v[13]).strip()))
     g = pd.DataFrame(rows, columns=["serial", "tour", "p1", "p2", "ms1", "ms2", "type"])
     g["dt"] = (pd.to_datetime("1899-12-30") + pd.to_timedelta(g["serial"], unit="D")).dt.round("min")
+    print(f"console DATA rows: {len(vals)}, read: {len(g)}, date as TEXT (read anyway): {textdate}, "
+          f"unreadable date/time: {len(bad)}" + (f" e.g. row/date/time {bad[:5]}" if bad else ""))
+    if len(g):
+        print("console DATA last 5 dates:", g["dt"].dt.strftime("%d.%m").value_counts().sort_index(
+            key=lambda s: pd.to_datetime(s + ".2000", format="%d.%m.%Y")).tail(5).to_dict(),
+              "| last sheet row:", vals and (list(vals[-1]) + [""] * 3)[:3])
     g["key"] = ["|".join(sorted([a.lower(), b.lower()])) for a, b in zip(g.p1, g.p2)]
     print("console DATA by Type:", g["type"].replace("", "(empty)").value_counts().to_dict())
     test = g["type"].str.lower().eq("test")
