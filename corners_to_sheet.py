@@ -41,14 +41,23 @@ def list_files():
             return out
 
 
-def load(fid):
-    buf = io.BytesIO()
-    dl = MediaIoBaseDownload(buf, drive.files().get_media(fileId=fid, supportsAllDrives=True))
-    done = False
-    while not done:
-        _, done = dl.next_chunk()
-    buf.seek(0)
-    return pd.read_parquet(buf)
+def load(fid, name=""):
+    """Download with retries: Google Drive sometimes answers 500/503 for a moment."""
+    import time
+    for att in range(6):
+        try:
+            buf = io.BytesIO()
+            dl = MediaIoBaseDownload(buf, drive.files().get_media(fileId=fid, supportsAllDrives=True))
+            done = False
+            while not done:
+                _, done = dl.next_chunk(num_retries=3)
+            buf.seek(0)
+            return pd.read_parquet(buf)
+        except Exception as e:
+            print(f"download retry {att + 1}/6 {name}: {str(e)[:120]}")
+            time.sleep(5 * (att + 1))
+    print(f"SKIPPED file after 6 tries: {name}")
+    return None
 
 
 def file_date(name):
@@ -70,6 +79,7 @@ WANT = {
     "incident_type_id":   ["incident_type_id", "incident_type"],
     "incident_timestamp": ["incident_timestamp", "incident_ts"],
     "actor":              ["actor"],
+    "score":              ["current_score", "score"],
 }
 
 
@@ -87,7 +97,9 @@ def pick(cols, prefixes):
 
 frames, colmap = [], None
 for f in files:
-    d = load(f["id"])
+    d = load(f["id"], f.get("name", ""))
+    if d is None:
+        continue
     if colmap is None:
         print("COLUMNS:", list(d.columns))
         colmap = {k: pick(d.columns, v) for k, v in WANT.items()}
@@ -110,6 +122,9 @@ meta = (df.groupby("match_id")
           .agg(match_date=("match_date", "first"), match_title=("match_title", "first"),
                league=("league", "first"), periods=("period", "max"))
           .reset_index())
+
+_sc = df[df["score"].astype(str).str.contains(":", na=False)].groupby("match_id")["score"].last()
+meta["score"] = meta["match_id"].map(_sc).fillna("")
 
 pat = r"^\s*(.*?)\s*\(([^()]*)\)\s*-\s*(.*?)\s*\(([^()]*)\)\s*$"
 meta[["team1", "p1", "team2", "p2"]] = meta["match_title"].str.extract(pat)
@@ -173,11 +188,12 @@ gc = gspread.authorize(creds)
 sh = gc.open_by_key(SHEET_ID)
 
 
-def write_ws(name, frame, chunk=5000):
+def write_ws(name, frame, chunk=5000, book=None):
+    book = book or sh
     try:
-        ws = sh.worksheet(name)
+        ws = book.worksheet(name)
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(name, rows=1, cols=len(frame.columns))
+        ws = book.add_worksheet(name, rows=1, cols=len(frame.columns))
     values = [frame.columns.tolist()] + json.loads(frame.to_json(orient="values"))
     ws.clear()
     ws.resize(rows=len(values), cols=len(frame.columns))
@@ -492,8 +508,8 @@ def build_calc(sh, name):
         (36, "MO_P1", f"=IFERROR(SUMPRODUCT({M_WM},{M_A})/SUM({M_W}),0)"),
         (37, "MO_P2", f"=IFERROR(SUMPRODUCT({M_WM},{M_B})/SUM({M_W}),0)"),
         (39, "G_tour", f"=SUMPRODUCT({M_W}*{tmask})"),
-        (40, "a_tour", f"=IF(AI39>{NTOUR},{MAXT},AI39/({NTOUR}/{MAXT}))"),
-        (41, "a_tour_Res", f"=IF(AI39>{NTOUR},{TRES},AI39/({NTOUR}/{TRES}))"),
+        (40, "a_tour", f"=IF(AI39>{NTOUR},{MAXT},AI39*{MAXT}/{NTOUR})"),
+        (41, "a_tour_Res", f"=IF(AI39>{NTOUR},{TRES},AI39*{TRES}/{NTOUR})"),
         (42, "MO_P1_a", f"=IF(AI39>0,AI36*(1-AI40)+SUMPRODUCT({M_WM}*{tmask}*{M_A})/AI39*AI40,AI36)"),
         (43, "MO_P2_a", f"=IF(AI39>0,AI37*(1-AI40)+SUMPRODUCT({M_WM}*{tmask}*{M_B})/AI39*AI40,AI37)"),
         (46, "P_draw", f"=IFERROR(SUMPRODUCT({M_W}*({M_A}={M_B}))/SUM({M_W}),0)"),
@@ -528,8 +544,8 @@ def build_calc(sh, name):
         (72, "M_P1T1", "=IFERROR(AI64/AI63,1)"),
         (73, "S_P2T2", "=IFERROR(AI67/AI66,1)"),
         (74, "M_P2T2", "=IFERROR(AI69/AI68,1)"),
-        (76, "a_P1T1", f"=IF(AI60>{NPT},{MAXPT},AI60/({NPT}/{MAXPT}))"),
-        (77, "a_P2T2", f"=IF(AI65>{NPT},{MAXPT},AI65/({NPT}/{MAXPT}))"),
+        (76, "a_P1T1", f"=IF(AI60>{NPT},{MAXPT},AI60*{MAXPT}/{NPT})"),
+        (77, "a_P2T2", f"=IF(AI65>{NPT},{MAXPT},AI65*{MAXPT}/{NPT})"),
         (79, "S_T1+P1T1", "=IF(AI76>0,AI55*(1-AI76)+AI71*AI76,AI55)"),
         (80, "M_T1+P1T1", "=IF(AI76>0,AI56*(1-AI76)+AI72*AI76,AI56)"),
         (81, "S_T2+P2T2", "=IF(AI77>0,AI57*(1-AI77)+AI73*AI77,AI57)"),
@@ -767,7 +783,8 @@ def build_calc(sh, name):
     X = f"{hc[0]}2:{hc[0]}71"
     for tcol, ycol in ((hc[5], hc[1]), (hc[6], hc[3])):
         Y = f"{ycol}2:{ycol}71"
-        put(f"{tcol}2", f'=IFERROR(ARRAYFORMULA(TREND(FILTER({Y},ISNUMBER({Y})),FILTER({X},ISNUMBER({Y})),{X})),"")')
+        put(f"{tcol}2", f'=IFERROR(ARRAYFORMULA(IF(ISNUMBER({Y}),TREND(FILTER({Y},ISNUMBER({Y})),'
+                        f'FILTER({X},ISNUMBER({Y})),{X}),NA())),"")')
     fmt(f"{hc[0]}1:{hc[6]}1", {"textFormat": {"bold": True}, "backgroundColor": GREY})
     fmt(f"{hc[0]}2:{hc[0]}71", {"numberFormat": {"type": "DATE", "pattern": "dd.mm.yyyy"}})
     fmt(f"{hc[1]}2:{hc[6]}71", {"numberFormat": {"type": "NUMBER", "pattern": "0.00"}})

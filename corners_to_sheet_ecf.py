@@ -40,14 +40,23 @@ def list_files():
             return out
 
 
-def load(fid):
-    buf = io.BytesIO()
-    dl = MediaIoBaseDownload(buf, drive.files().get_media(fileId=fid, supportsAllDrives=True))
-    done = False
-    while not done:
-        _, done = dl.next_chunk()
-    buf.seek(0)
-    return pd.read_parquet(buf)
+def load(fid, name=""):
+    """Download with retries: Google Drive sometimes answers 500/503 for a moment."""
+    import time
+    for att in range(6):
+        try:
+            buf = io.BytesIO()
+            dl = MediaIoBaseDownload(buf, drive.files().get_media(fileId=fid, supportsAllDrives=True))
+            done = False
+            while not done:
+                _, done = dl.next_chunk(num_retries=3)
+            buf.seek(0)
+            return pd.read_parquet(buf)
+        except Exception as e:
+            print(f"download retry {att + 1}/6 {name}: {str(e)[:120]}")
+            time.sleep(5 * (att + 1))
+    print(f"SKIPPED file after 6 tries: {name}")
+    return None
 
 
 def file_date(name):
@@ -87,7 +96,9 @@ def pick(cols, prefixes):
 
 frames, colmap = [], None
 for f in files:
-    d = load(f["id"])
+    d = load(f["id"], f.get("name", ""))
+    if d is None:
+        continue
     if colmap is None:
         print("COLUMNS:", list(d.columns))
         colmap = {k: pick(d.columns, v) for k, v in WANT.items()}
