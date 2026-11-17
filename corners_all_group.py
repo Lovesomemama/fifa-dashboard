@@ -53,7 +53,8 @@ def retry(fn, *a, **k):
         try:
             return fn(*a, **k)
         except gspread.exceptions.APIError as e:
-            if att == 5:
+            code = getattr(getattr(e, "response", None), "status_code", 500)
+            if att == 5 or code in (400, 403, 404):          # bad request / no access: retry is useless
                 raise
             print(f"retry {att + 1}/6: {str(e)[:120]}")
             time.sleep(3 * 2 ** att)
@@ -193,8 +194,8 @@ def build(T, H, settings):
 
     # ================= chips (rows 1-4) =================
     cput("A1", "*"); cput("A2", "*"); cput("D2", "*"); cput("C3", "X")
-    merge("A1", 1, "E1", 1); merge("A2", 2, "B2", 2); merge("D2", 2, "E2", 2)
-    merge("A3", 3, "B3", 3); merge("D3", 3, "E3", 3)
+    merge("A", 1, "E", 1); merge("A", 2, "B", 2); merge("D", 2, "E", 2)
+    merge("A", 3, "B", 3); merge("D", 3, "E", 3)
     for a1, v in (("M1", "Выборка дней"), ("N1", "От"), ("M2", 30), ("N2", "=$N$4-$M$2"),
                   ("M3", "Для графика"), ("N3", "До"), ("M4", 30), ("N4", "=TODAY()")):
         cput(a1, v)
@@ -591,6 +592,16 @@ def build(T, H, settings):
           f"halves P12:U14, result P16:S18, last H2H M23:S43, settings AH4:AI26, charts from row {R0 + 19}")
 
 
+# half-built tabs from an earlier failed run (marker AH1 missing) -> remove, so numbering starts clean
+for w in book.worksheets():
+    m = re.fullmatch(rf"{PREFIX}_v(\d+)", w.title)
+    if m and (retry(w.acell, "AH1").value or "") != f"{PREFIX} ok":
+        for t in (w.title, w.title + "_model"):
+            try:
+                retry(book.del_worksheet, book.worksheet(t))
+                print("removed half-built", t)
+            except gspread.WorksheetNotFound:
+                pass
 titles = [w.title for w in book.worksheets()]
 nums = [int(m.group(1)) for t in titles for m in [re.fullmatch(rf"{PREFIX}_v(\d+)", t)] if m]
 n = max(nums, default=0) + 1
@@ -599,4 +610,13 @@ for need in (DB, "PAIRS"):
     if need not in titles:
         raise SystemExit(f"{need} not found in Corners_H2H -> run corners-to-sheet first")
 print("building", T, "+", H)
-build(T, H, read_ecf_settings())
+try:
+    build(T, H, read_ecf_settings())
+except Exception:
+    for t in (T, H):                                     # remove half-built tabs of THIS run only
+        try:
+            retry(book.del_worksheet, book.worksheet(t))
+            print("removed half-built", t)
+        except Exception:
+            pass
+    raise
