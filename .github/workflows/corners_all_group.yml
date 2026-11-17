@@ -1,0 +1,18 @@
+name: corners-ecf-all
+on:
+  workflow_dispatch:      # manual only: each run builds a NEW tab ECF_ALL_vN in Corners_H2H
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install gspread google-auth
+      - run: python corners_ecf_all.py
+        env:
+          GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
+          GSHEET_ID: ${{ secrets.GSHEET_ID }}
+          GSHEET_ID_CONSOLE: ${{ secrets.GSHEET_ID_CONSOLE }}
