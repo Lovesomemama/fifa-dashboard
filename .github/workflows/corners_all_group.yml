@@ -1,4 +1,4 @@
-name: corners-ecf-all
+name: corners-all-group
 on:
   workflow_dispatch:      # manual only: each run builds a NEW tab ECF_ALL_vN in Corners_H2H
 
