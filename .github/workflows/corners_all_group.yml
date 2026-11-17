@@ -11,7 +11,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install gspread google-auth
-      - run: python corners_ecf_all.py
+      - run: python corners_all_group.py
         env:
           GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
           GSHEET_ID: ${{ secrets.GSHEET_ID }}
